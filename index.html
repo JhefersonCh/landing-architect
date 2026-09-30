@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Landing Page Prompt Architect</title>
+<meta name="description" content="Estudio de ingeniería de prompts para generar landing pages a partir de contexto de negocio real.">
+<meta name="color-scheme" content="light dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Saltar al contenido principal</a>
+
+<div class="bg-fx" aria-hidden="true">
+  <div class="bg-fx__noise"></div>
+  <div class="blob blob--1"></div>
+  <div class="blob blob--2"></div>
+  <div class="blob blob--3"></div>
+</div>
+
+<div class="shell">
+
+  <aside class="rail" aria-label="Navegación del estudio">
+    <div class="rail__brand">
+      <p class="rail__mark" aria-hidden="true">LP·A</p>
+      <p class="rail__title">Landing&nbsp;Page<br>Prompt&nbsp;Architect</p>
+    </div>
+
+    <nav class="rail__nav" aria-label="Progreso del flujo">
+      <ol class="rail__steps">
+        <li class="rail__item">
+          <button type="button" class="steps__button rail__step" data-goto="setup" aria-current="step">
+            <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20l1-5 11-11 4 4L9 19z"/><path d="M14 5l4 4"/></svg></span>
+            <span class="rail__step-index">01</span>
+            <span class="rail__step-label">Setup</span>
+          </button>
+        </li>
+        <li class="rail__item">
+          <button type="button" class="steps__button rail__step" data-goto="contexto">
+            <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg></span>
+            <span class="rail__step-index">02</span>
+            <span class="rail__step-label">Contexto y tecnologías</span>
+          </button>
+        </li>
+        <li class="rail__item">
+          <button type="button" class="steps__button rail__step" data-goto="generador">
+            <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2l1.8 4.9L19 9l-5.2 2.1L12 16l-1.8-4.9L5 9l5.2-2.1z"/></svg></span>
+            <span class="rail__step-index">03</span>
+            <span class="rail__step-label">Generador</span>
+          </button>
+        </li>
+        <li class="rail__item">
+          <button type="button" class="steps__button rail__step" data-goto="ejecutor">
+            <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg></span>
+            <span class="rail__step-index">04</span>
+            <span class="rail__step-label">Ejecutor</span>
+          </button>
+        </li>
+        <li class="rail__item">
+          <button type="button" class="steps__button rail__step" data-goto="config" id="rail-config">
+            <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></span>
+            <span class="rail__step-index" aria-hidden="true">⚙</span>
+            <span class="rail__step-label">Configuración</span>
+          </button>
+        </li>
+      </ol>
+    </nav>
+
+    <button type="button" id="bank-nav-link" class="rail__bank">
+      <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7l2-4h14l2 4"/><path d="M3 7h18v13H3z"/><path d="M9 12h6"/></svg></span>
+      <span class="rail__step-index">05</span>
+      <span class="rail__step-label">Banco</span>
+    </button>
+  </aside>
+
+  <main id="main" class="workspace">
+
+    <section id="view-setup" class="view" data-view="setup">
+      <header class="view__head view__head--hero">
+        <div class="view__head-main">
+        <p class="view__eyebrow">01 · Setup</p>
+        <h2>Contexto del proyecto</h2>
+        <svg class="squiggle" viewBox="0 0 340 24" aria-hidden="true" focusable="false"><path d="M4 16c20-14 40-14 60 0s40 14 60 0 40-14 60 0 40 14 60 0 40-14 60 0"/></svg>
+        <p class="view__hint">Contá el contexto real del proyecto. Estos datos son la base de todo el prompt: cuanto más concretos, menos genérico va a ser el resultado.</p>
+        </div>
+
+        <div class="hero3d">
+          <div class="hero3d__mock" id="hero3d-mock">
+            <div class="hero3d__bar">
+              <span class="hero3d__dot"></span><span class="hero3d__dot"></span><span class="hero3d__dot"></span>
+            </div>
+            <div class="hero3d__canvas">
+              <svg class="hero3d__wire" viewBox="0 0 260 130" fill="none" aria-hidden="true" focusable="false">
+                <path d="M14 16h140"/>
+                <path class="hero3d__block" d="M14 40h232M14 58h180M14 76h210"/>
+                <path class="hero3d__cta" d="M14 100h70"/>
+              </svg>
+              <svg class="hero3d__pencil" viewBox="0 0 60 60" fill="none" aria-hidden="true" focusable="false">
+                <path d="M8 52 44 16l8 8-36 36-12 4z" fill="var(--surface)" stroke="currentColor" stroke-width="2.5"/>
+                <path d="M8 52l3-11 8 8z" fill="var(--rosa)" stroke="currentColor" stroke-width="2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="config-notice" id="setup-provider-notice" role="status" hidden>
+        <p>Todavía no elegiste un modelo. Es lo primero que conviene hacer: sin proveedor no se puede generar ni ejecutar el prompt.</p>
+        <button type="button" class="btn btn--primary btn--small" id="setup-provider-notice-btn">Ir a Configuración</button>
+      </div>
+
+      <form id="form-setup" class="ledger" novalidate>
+
+        <div class="field-row field-row--ai">
+          <div class="field-row__label">
+            <span class="field-row__index">00</span>
+            <label for="input-descripcion">Descripción general <span class="field__optional">(opcional, recomendada)</span></label>
+          </div>
+          <div class="field-row__control">
+            <textarea id="input-descripcion" name="descripcion" rows="5" aria-describedby="hint-descripcion ai-fill-status" placeholder="Contá el proyecto con tus palabras: qué hacés, para quién, qué vendés, qué querés lograr con la página, cómo querés que se sienta…"></textarea>
+            <p class="dialog__note" id="hint-descripcion">Texto libre: se usa como contexto rico en todo el prompt. Con 30 caracteres o más podés pedirle a la IA que complete los campos de abajo (no pisa lo que ya escribiste).</p>
+            <div class="ai-fill">
+              <button type="button" class="btn btn--primary btn--small" id="btn-ai-fill" disabled aria-disabled="true">Completar campos con IA</button>
+              <button type="button" class="btn btn--link btn--small" id="btn-ai-fill-cancel" hidden>Cancelar</button>
+              <p class="ai-fill__status" id="ai-fill-status" role="status" aria-live="polite"></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">01</span>
+            <label for="input-tema">Tema *</label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-tema" name="tema" type="text" required aria-describedby="err-tema" placeholder="Ej: Relojería de lujo">
+            <p class="field__error" id="err-tema" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">02</span>
+            <label for="input-publico">Público objetivo *</label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-publico" name="publico" type="text" required aria-describedby="err-publico" placeholder="Ej: Compradores de relojes artesanales de edición limitada">
+            <p class="field__error" id="err-publico" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">03</span>
+            <label for="input-oferta">Oferta *</label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-oferta" name="oferta" type="text" required aria-describedby="err-oferta" placeholder="Ej: Colección de relojes de edición limitada">
+            <p class="field__error" id="err-oferta" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">04</span>
+            <label for="input-objetivo">Objetivo *</label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-objetivo" name="objetivo" type="text" required aria-describedby="err-objetivo" placeholder="Ej: Reservar una pieza">
+            <p class="field__error" id="err-objetivo" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">05</span>
+            <label for="input-competidores">Competidores *</label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-competidores" name="competidores" type="text" required aria-describedby="err-competidores" placeholder="Ej: Marcas de relojería de lujo tradicionales">
+            <p class="field__error" id="err-competidores" role="alert"></p>
+          </div>
+        </div>
+
+        <p class="ledger__section-label">Campos opcionales</p>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">06</span>
+            <label for="input-tono">Tono <span class="field__optional">(opcional)</span></label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-tono" name="tono" type="text" placeholder="Ej: sobrio y directo">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">07</span>
+            <label for="input-referencias">Referencias visuales <span class="field__optional">(opcional)</span></label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-referencias" name="referenciasVisuales" type="text" placeholder="Ej: editorial de moda, tipografía serif">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">08</span>
+            <label for="input-propuesta">Propuesta de valor <span class="field__optional">(opcional)</span></label>
+          </div>
+          <div class="field-row__control">
+            <input id="input-propuesta" name="propuestaValor" type="text" placeholder="Qué te diferencia concretamente">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">09</span>
+            <label for="input-restricciones">Restricciones adicionales <span class="field__optional">(opcional)</span></label>
+          </div>
+          <div class="field-row__control">
+            <textarea id="input-restricciones" name="restriccionesAdicionales" rows="2" placeholder="Ej: no mostrar precios, no usar fotos de personas"></textarea>
+          </div>
+        </div>
+
+        <p class="ledger__section-label">Multimedia real (opcional)</p>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">10</span>
+            <label id="label-media-ref" for="media-ref-input">Referencia visual <span class="field__optional">(imagen o video)</span></label>
+          </div>
+          <div class="field-row__control">
+            <div class="dropzone" id="dropzone-ref" tabindex="0" role="button" aria-labelledby="label-media-ref" aria-describedby="media-ref-hint">
+              <span class="dropzone__text">Arrastrá 1 a 3 archivos o <strong>hacé clic para elegir</strong></span>
+              <input id="media-ref-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4,video/webm" multiple hidden>
+            </div>
+            <p class="dialog__note" id="media-ref-hint">Guía el estilo, la paleta y la composición; <strong>no aparece</strong> en la página. Privacidad: los archivos quedan en tu equipo (carpeta <code>media/</code>); para describirla con IA, la imagen (o 4 fotogramas del video) se envía a Google Gemini si configuraste <code>GEMINI_API_KEY</code>, o al proveedor de visión que elijas en Configuración (DeepSeek u otro compatible con OpenAI, Anthropic). Sin visión con IA se usa solo la paleta de colores medida en tu navegador.</p>
+            <ul class="media-list" id="media-ref-list" aria-live="polite"></ul>
+            <p class="field__error" id="err-media-ref" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field-row__label">
+            <span class="field-row__index">11</span>
+            <label id="label-media-req" for="media-req-input">Multimedia obligatoria <span class="field__optional">(imágenes o videos)</span></label>
+          </div>
+          <div class="field-row__control">
+            <div class="dropzone" id="dropzone-req" tabindex="0" role="button" aria-labelledby="label-media-req" aria-describedby="media-req-hint">
+              <span class="dropzone__text">Arrastrá archivos o <strong>hacé clic para elegir</strong></span>
+              <input id="media-req-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4,video/webm" multiple hidden>
+            </div>
+            <p class="dialog__note" id="media-req-hint">Estos archivos <strong>sí o sí aparecen</strong> en la landing, con el rol que elijas y su texto alternativo. Imágenes hasta 10 MB; videos hasta 60 MB.</p>
+            <ul class="media-list" id="media-req-list" aria-live="polite"></ul>
+            <p class="field__error" id="err-media-req" role="alert"></p>
+          </div>
+        </div>
+
+        <div class="view__actions view__actions--split">
+          <button type="button" id="btn-load-example" class="btn btn--link">Cargar ejemplo</button>
+          <button type="submit" class="btn btn--primary">Continuar</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="view-contexto" class="view" data-view="contexto" hidden>
+      <header class="view__head">
+        <p class="view__eyebrow">02 · Contexto, tecnologías y técnicas</p>
+        <h2>Vertical, stack y técnicas</h2>
+        <svg class="squiggle" viewBox="0 0 340 24" aria-hidden="true" focusable="false"><path d="M4 16c20-14 40-14 60 0s40 14 60 0 40-14 60 0 40 14 60 0 40-14 60 0"/></svg>
+        <p class="view__hint">El vertical define el contexto de negocio (psicología, objeciones, mercado). La tecnología define cómo se implementa. Ambos afectan el prompt de forma distinta.</p>
+      </header>
+
+      <fieldset class="field-group">
+        <legend>
+          <span class="field-row__index">01</span>
+          Verticales de negocio
+          <span class="field__optional">(opcional)</span>
+        </legend>
+        <div class="chip-group chip-group--grid" id="group-verticals" role="group" aria-label="Verticales de negocio"></div>
+        <div class="vertical-otro" id="vertical-otro-wrap" hidden>
+          <label class="vertical-otro__label" for="input-vertical-otro">Tu rubro</label>
+          <input type="text" id="input-vertical-otro" maxlength="80" autocomplete="off" placeholder="Ej: cervecería artesanal, clínica veterinaria" aria-describedby="err-vertical-otro">
+          <p class="field__error" id="err-vertical-otro" role="alert"></p>
+        </div>
+        <p class="view__hint">Si no elegís ninguno, la IA infiere el rubro a partir de la descripción del proyecto.</p>
+      </fieldset>
+
+      <fieldset class="field-group">
+        <legend>
+          <span class="field-row__index">02</span>
+          Tecnologías de implementación *
+        </legend>
+        <div class="chip-group" id="group-technologies" role="group" aria-label="Tecnologías de implementación"></div>
+      </fieldset>
+
+      <fieldset class="field-group" id="fieldset-techniques">
+        <legend>
+          <span class="field-row__index">03</span>
+          Técnicas de diseño con IA
+        </legend>
+        <p class="view__hint">Las 8 técnicas de la guía. Cada una puede activarse por separado: el prompt y el flujo de generación se arman con las que elijas.</p>
+        <div class="techniques__presets" role="group" aria-label="Presets de técnicas">
+          <button type="button" id="btn-tech-all" class="btn btn--secondary" aria-pressed="true">Todas</button>
+          <button type="button" id="btn-tech-none" class="btn btn--secondary" aria-pressed="false">Ninguna</button>
+          <span id="techniques-summary" class="techniques__summary" role="status"></span>
+        </div>
+        <div class="technique-list" id="group-techniques" role="group" aria-label="Técnicas de diseño con IA"></div>
+      </fieldset>
+
+      <section class="ssot-panel" id="ssot-panel" aria-labelledby="ssot-title" hidden>
+        <h3 id="ssot-title">Cadena semilla (SSoT)</h3>
+        <p class="view__hint">Esta cadena decide la dirección creativa: paleta, tipografía, layout, hero, 3D y scroll. La misma cadena da siempre la misma dirección; se guarda en este navegador y se sustituye en el prompt de ejecución. Para otra dirección, generá una cadena nueva o pegá una propia.</p>
+        <code class="ssot-seed" id="ssot-seed-display" aria-label="Cadena semilla actual"></code>
+        <div class="ssot-actions">
+          <button type="button" id="btn-ssot-new" class="btn btn--secondary">Generar nueva cadena</button>
+          <button type="button" id="btn-ssot-copy" class="btn btn--secondary">Copiar</button>
+          <span id="ssot-action-status" class="ssot-status" role="status"></span>
+        </div>
+        <div class="ssot-paste">
+          <label for="ssot-seed-input">Usar una cadena propia (hexadecimal, de 16 a 128 caracteres)</label>
+          <div class="ssot-paste__row">
+            <input type="text" id="ssot-seed-input" class="ssot-paste__input" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="ssot-seed-error" placeholder="por ejemplo 9f3a…">
+            <button type="button" id="btn-ssot-apply" class="btn btn--secondary">Usar esta cadena</button>
+          </div>
+          <p class="field__error" id="ssot-seed-error" role="alert"></p>
+        </div>
+        <div class="ssot-preview" id="ssot-preview" role="group" aria-labelledby="ssot-preview-title">
+          <h4 id="ssot-preview-title">Vista previa de decisiones</h4>
+          <p class="ssot-preview__summary" id="ssot-preview-summary" aria-live="polite"></p>
+          <div id="ssot-swatches"></div>
+          <dl class="ssot-decisions" id="ssot-decisions"></dl>
+        </div>
+      </section>
+
+      <section class="concept-pick-panel" id="concept-pick-panel" aria-labelledby="concept-pick-title" hidden>
+        <h3 id="concept-pick-title">Concepto rector (técnica 2)</h3>
+        <p class="view__hint">La página ES un concepto del mundo del cliente, con su propia forma de navegarse. Idealo y elegilo acá, antes del prompt: así el prompt se arma una sola vez con el concepto elegido y los recursos (imágenes y video) lo expresan.</p>
+        <div class="concept-pick-actions">
+          <button type="button" id="btn-concept-ideate" class="btn btn--secondary">Idear 3 conceptos</button>
+          <button type="button" id="btn-concept-cancel" class="btn btn--secondary" hidden>Cancelar</button>
+          <button type="button" id="btn-concept-own" class="btn btn--secondary" aria-expanded="false" aria-controls="concept-own-form">Escribir mi propio concepto</button>
+          <span id="concept-pick-status" class="ssot-status" role="status"></span>
+        </div>
+        <form class="concept-own" id="concept-own-form" hidden novalidate>
+          <label for="concept-own-title">Título</label>
+          <input type="text" id="concept-own-title" maxlength="140" autocomplete="off">
+          <label for="concept-own-is">La página es…</label>
+          <input type="text" id="concept-own-is" maxlength="500" autocomplete="off" placeholder="por ejemplo: un reloj de bolsillo cuyas partes son los paneles">
+          <label for="concept-own-nav">Navegación</label>
+          <input type="text" id="concept-own-nav" maxlength="600" autocomplete="off" placeholder="por ejemplo: se gira la corona para pasar de panel">
+          <p class="field__error" id="concept-own-error" role="alert"></p>
+          <button type="submit" id="btn-concept-own-save" class="btn btn--primary btn--small">Usar mi concepto</button>
+        </form>
+        <p class="pregen-note" id="concept-pick-note" role="status"></p>
+        <ul class="concept-list" id="concept-pick-list" aria-label="Conceptos propuestos"></ul>
+        <button type="button" id="btn-concept-more" class="btn btn--secondary btn--small" hidden>Otros 3 conceptos</button>
+      </section>
+
+      <section class="pregen-panel" id="pregen-panel" aria-labelledby="pregen-title" hidden>
+        <h3 id="pregen-title">Recursos generados (técnicas 4 y 5)</h3>
+        <p class="view__hint">Generá las imágenes y el video antes del prompt para verlos, regenerar o quitar lo que no sirva. El prompt se arma con lo que quede acá.</p>
+        <p class="pregen-backend" id="pregen-backend" role="status"></p>
+        <p class="pregen-note" id="pregen-note" role="status"></p>
+
+        <div class="pregen-block" id="pregen-images-block" hidden>
+          <div class="pregen-block__head">
+            <h4>Imagen (técnica 4)</h4>
+            <div class="pregen-actions">
+              <button type="button" id="btn-pregen-image" class="btn btn--secondary">Generar imagen</button>
+              <button type="button" id="btn-pregen-image-lib" class="btn btn--secondary">Elegir de la biblioteca</button>
+            </div>
+          </div>
+          <p class="pregen-progress" id="pregen-images-progress" role="status"></p>
+          <ul class="pregen-grid" id="pregen-images-grid" aria-label="Imágenes pre-generadas"></ul>
+        </div>
+
+        <div class="pregen-block" id="pregen-videos-block" hidden>
+          <div class="pregen-block__head">
+            <h4>Video (técnica 5)</h4>
+            <div class="pregen-actions">
+              <button type="button" id="btn-pregen-video" class="btn btn--secondary">Generar video</button>
+              <button type="button" id="btn-pregen-video-lib" class="btn btn--secondary">Elegir de la biblioteca</button>
+            </div>
+          </div>
+          <p class="pregen-progress" id="pregen-videos-progress" role="status"></p>
+          <ul class="pregen-grid" id="pregen-videos-grid" aria-label="Videos pre-generados"></ul>
+        </div>
+      </section>
+
+      <div class="pregen-modal" id="pregen-library" role="dialog" aria-modal="true" aria-labelledby="pregen-library-title" hidden>
+        <div class="pregen-modal__box">
+          <div class="pregen-modal__head">
+            <h3 id="pregen-library-title">Biblioteca</h3>
+            <button type="button" id="btn-pregen-library-close" class="btn btn--link">Cerrar</button>
+          </div>
+          <p class="pregen-modal__status" id="pregen-library-status" role="status"></p>
+          <ul class="pregen-library-grid" id="pregen-library-grid"></ul>
+          <div class="pregen-modal__foot">
+            <label for="pregen-library-role">Rol de lo elegido</label>
+            <select id="pregen-library-role"></select>
+            <button type="button" id="btn-pregen-library-add" class="btn btn--primary" disabled>Usar seleccionados</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="field__error" id="err-contexto" role="alert"></p>
+
+      <div class="view__actions">
+        <button type="button" class="btn btn--secondary" data-goto="setup">Volver</button>
+        <button type="button" id="btn-generate" class="btn btn--primary">Generar Prompt</button>
+      </div>
+    </section>
+
+    <section id="view-generador" class="view" data-view="generador" hidden>
+      <header class="view__head">
+        <p class="view__eyebrow">03 · Generador</p>
+        <h2>Prompt por tecnología</h2>
+        <svg class="squiggle" viewBox="0 0 340 24" aria-hidden="true" focusable="false"><path d="M4 16c20-14 40-14 60 0s40 14 60 0 40-14 60 0 40 14 60 0 40-14 60 0"/></svg>
+      </header>
+
+      <div class="generador__direction" id="creative-direction"></div>
+
+      <section class="generador__concepts" id="concept-panel" aria-label="Conceptos rectores" hidden></section>
+
+      <div class="tabs" id="prompt-tabs" role="tablist" aria-label="Prompts por tecnología"></div>
+
+      <div class="prompt-panel">
+        <p class="status" id="prompt-gen-status" role="status"></p>
+
+        <div class="prompt-panel__meta">
+          <div class="ledger-block" id="prompt-structure"></div>
+          <div class="ledger-block" id="prompt-constraints"></div>
+        </div>
+
+        <details class="assets-panel" id="assets-panel" hidden>
+          <summary id="assets-panel-summary">Recursos</summary>
+          <p class="dialog__note">Estos recursos se le pasan al redactor con sus URLs exactas. Quitá los que no quieras antes de ejecutar: se eliminan también del prompt.</p>
+          <ul class="assets-grid" id="assets-grid"></ul>
+          <ul class="assets-notices" id="assets-notices"></ul>
+        </details>
+
+        <div class="prompt-editor">
+          <p class="prompt-editor__bar">Prompt editable</p>
+          <p class="status" id="prompt-draft-notice" role="status" hidden>
+            Se restauró tu borrador del prompt.
+            <button type="button" id="btn-discard-draft" class="btn btn--link">Descartar borrador</button>
+          </p>
+          <label for="prompt-textarea" class="sr-only">Texto del prompt (editable)</label>
+          <textarea id="prompt-textarea" class="prompt-textarea" spellcheck="false"></textarea>
+          <p class="status" id="prompt-edit-status" role="status"></p>
+        </div>
+
+        <div class="view__actions">
+          <button type="button" id="btn-copy-prompt" class="btn btn--secondary">Copiar</button>
+          <button type="button" id="btn-regenerate" class="btn btn--secondary">Regenerar</button>
+          <button type="button" id="btn-cancel-generate" class="btn btn--secondary" hidden>Cancelar</button>
+          <button type="button" id="btn-execute" class="btn btn--primary">Ejecutar Prompt</button>
+        </div>
+        <p class="status" id="prompt-copy-status" role="status"></p>
+      </div>
+    </section>
+
+    <section id="view-ejecutor" class="view" data-view="ejecutor" hidden>
+      <header class="view__head">
+        <p class="view__eyebrow">04 · Ejecutor / Estudio</p>
+        <h2>Ejecución, edición y preview</h2>
+        <svg class="squiggle" viewBox="0 0 340 24" aria-hidden="true" focusable="false"><path d="M4 16c20-14 40-14 60 0s40 14 60 0 40-14 60 0 40 14 60 0 40-14 60 0"/></svg>
+        <p class="view__hint">Ejecutá el prompt, revisá el resultado y editalo acá mismo: a mano en el código, o pidiéndole un cambio puntual a la IA. Cada cambio queda como una versión con historial.</p>
+      </header>
+
+      <div class="ejecutor__toolbar">
+        <button type="button" id="btn-provider-config" class="btn btn--secondary">Configuración</button>
+        <span id="provider-summary" class="ejecutor__provider-summary"></span>
+        <button type="button" id="btn-open-window" class="btn btn--secondary">Abrir en ventana nueva</button>
+        <button type="button" id="btn-cancel-execute" class="btn btn--secondary" hidden>Cancelar</button>
+      </div>
+
+      <p class="status" id="ejecutor-status" role="status"></p>
+      <pre class="status-log" id="ejecutor-log" tabindex="0" aria-label="Registro del servidor de desarrollo" hidden></pre>
+
+      <div class="studio-tabs" id="studio-tabs" role="tablist" aria-label="Vista del Estudio">
+        <button type="button" id="studio-tab-preview" class="studio-tabs__btn" data-studio-tab="preview" role="tab" aria-selected="true" aria-controls="studio-preview-pane" tabindex="0">Vista previa</button>
+        <button type="button" id="studio-tab-code" class="studio-tabs__btn" data-studio-tab="code" role="tab" aria-selected="false" aria-controls="studio-editor-pane" tabindex="-1">Código</button>
+        <button type="button" id="btn-toggle-code" class="btn btn--secondary studio-tabs__toggle" aria-expanded="false">Mostrar código</button>
+        <button type="button" id="btn-split-toggle" class="btn btn--secondary studio-tabs__split" aria-pressed="false">Dividir</button>
+      </div>
+
+      <div class="studio" id="studio" data-view="preview">
+        <div class="studio__pane studio__pane--editor" id="studio-editor-pane" role="tabpanel" aria-labelledby="studio-tab-code" hidden>
+          <div class="studio__toolbar">
+            <button type="button" id="btn-copy-html" class="btn btn--secondary">Copiar código</button>
+            <button type="button" id="btn-download-html" class="btn btn--secondary">Descargar HTML</button>
+            <label for="studio-file-select" class="studio__file-label" id="studio-file-label" hidden>Archivo</label>
+            <select id="studio-file-select" class="studio__file-select" aria-label="Archivo del proyecto" hidden></select>
+          </div>
+          <p class="status" id="studio-draft-notice" role="status" hidden>
+            Se restauró tu borrador del código.
+            <button type="button" id="btn-discard-studio-draft" class="btn btn--link">Descartar borrador</button>
+          </p>
+          <div id="editor-container" class="studio__editor" data-empty-hint="Ejecutá un prompt para empezar a editar el código acá."></div>
+        </div>
+
+        <div class="studio__splitter" id="studio-splitter" role="separator" aria-orientation="vertical" aria-label="Ajustar ancho entre código y vista previa" aria-valuenow="50" aria-valuemin="20" aria-valuemax="80" tabindex="0" hidden></div>
+
+        <div class="studio__pane studio__pane--preview" id="studio-preview-pane" role="tabpanel" aria-labelledby="studio-tab-preview">
+          <div class="studio__toolbar studio__toolbar--preview">
+            <button type="button" id="btn-inspect-toggle" class="btn btn--secondary" aria-pressed="false">Inspeccionar</button>
+            <button type="button" id="btn-save-version" class="btn btn--secondary">Guardar versión</button>
+            <div class="studio__width-presets" role="group" aria-label="Ancho de la vista previa">
+              <button type="button" class="studio__width-btn" data-width="mobile" aria-pressed="false">Móvil</button>
+              <button type="button" class="studio__width-btn" data-width="tablet" aria-pressed="false">Tablet</button>
+              <button type="button" class="studio__width-btn is-active" data-width="desktop" aria-pressed="true">Escritorio</button>
+            </div>
+          </div>
+          <div class="preview" id="preview-wrap">
+            <iframe id="preview-frame" title="Vista previa de la landing page generada" sandbox="allow-scripts"></iframe>
+            <!-- Proyectos multi-archivo (Vite/Next): apunta al dev server local (127.0.0.1:<puerto>), otro origen que esta app. allow-same-origin sólo significa "conservá TU origen" (el del dev server); nunca es el de la app. Ver DOCUMENTACION.md. -->
+            <iframe id="preview-project-frame" title="Vista previa del proyecto (servidor de desarrollo local)" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" hidden></iframe>
+          </div>
+        </div>
+      </div>
+
+      <div class="studio__vresize" id="studio-vresize" role="separator" aria-orientation="horizontal" aria-label="Redimensionar la altura del Estudio" aria-valuenow="70" aria-valuemin="30" aria-valuemax="100" tabindex="0"></div>
+
+      <section class="studio__ai-edit" id="ai-edit-panel" aria-labelledby="ai-edit-title">
+        <h3 id="ai-edit-title">Pedile un cambio a la IA</h3>
+        <label for="ai-instruction">Instrucción</label>
+        <textarea id="ai-instruction" rows="2" placeholder="Ej: cambiá el texto del CTA principal por &quot;Reservar mi pieza&quot; y no toques nada más"></textarea>
+        <div class="ai-edit__row">
+          <label for="ai-scope">Alcance</label>
+          <select id="ai-scope">
+            <option value="selection">Selección actual / elemento inspeccionado</option>
+            <option value="document" selected>Documento completo</option>
+          </select>
+          <button type="button" id="btn-ai-edit" class="btn btn--primary">Pedile un cambio a la IA</button>
+          <button type="button" id="btn-cancel-ai-edit" class="btn btn--secondary" hidden>Cancelar</button>
+        </div>
+        <p class="status" id="ai-edit-status" role="status"></p>
+        <div class="ai-edit__diff" id="ai-edit-diff" hidden>
+          <p id="ai-edit-diff-summary"></p>
+          <ul id="ai-edit-files" class="ai-edit__files" hidden></ul>
+          <div class="view__actions">
+            <button type="button" id="btn-ai-edit-accept" class="btn btn--primary">Aceptar</button>
+            <button type="button" id="btn-ai-edit-discard" class="btn btn--secondary">Descartar</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="studio__post" id="post-exec-panel" aria-labelledby="post-exec-title" hidden>
+        <h3 id="post-exec-title">Revisión posterior a la ejecución</h3>
+        <p class="status" id="post-exec-status" role="status"></p>
+        <div id="cro-review" hidden>
+          <h4>Crítico de la landing (UX, accesibilidad, persuasión)</h4>
+          <p class="status" id="cro-summary" role="status"></p>
+          <ul class="cro-list" id="cro-list"></ul>
+          <div class="view__actions">
+            <button type="button" id="btn-cro-apply" class="btn btn--primary" hidden>Rehacer arreglos</button>
+            <button type="button" id="btn-cro-round2" class="btn btn--secondary" hidden>Segunda vuelta del crítico</button>
+          </div>
+        </div>
+        <div id="rewrite-review" hidden>
+          <h4>Reescritura humana</h4>
+          <p class="status" id="rewrite-summary" role="status"></p>
+          <div class="view__actions">
+            <button type="button" id="btn-rewrite-use" class="btn btn--secondary" hidden>Ver la reescritura en el Estudio</button>
+          </div>
+        </div>
+        <button type="button" id="btn-cancel-post-exec" class="btn btn--secondary" hidden>Cancelar</button>
+      </section>
+
+      <section class="studio__versions" id="versions-panel" aria-labelledby="versions-title">
+        <h3 id="versions-title">Versiones</h3>
+        <ul id="versions-list" class="versions-list"></ul>
+      </section>
+
+      <p class="view__hint" id="ejecutor-seed-hint" hidden></p>
+
+      <div class="view__actions">
+        <button type="button" id="btn-rerun" class="btn btn--secondary">Regenerar</button>
+        <button type="button" id="btn-save-bank" class="btn btn--primary" disabled>Guardar en Banco</button>
+      </div>
+    </section>
+
+    <section id="view-config" class="view" data-view="config" hidden>
+      <header class="view__head">
+        <p class="view__eyebrow">⚙ · Configuración</p>
+        <h2>Modelos y servicios</h2>
+        <svg class="squiggle" viewBox="0 0 340 24" aria-hidden="true" focusable="false"><path d="M4 16c20-14 40-14 60 0s40 14 60 0 40-14 60 0 40 14 60 0 40-14 60 0"/></svg>
+        <p class="view__hint">Elegí el modelo antes de empezar. Las claves de los proveedores de texto se guardan sólo en este navegador; las de multimedia viven en el <code>.env</code> del servidor.</p>
+      </header>
+
+      <div class="config-stack">
+
+      <form id="form-provider" class="ledger config-card" novalidate>
+        <p class="ledger__section-label">Generador (prompt y landing)</p>
+        <p class="dialog__note">Redacta el prompt, ejecuta la landing y aplica las ediciones con IA.</p>
+        <div class="field">
+          <label for="provider-select">Proveedor</label>
+          <select id="provider-select" name="provider">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai-compatible">Compatible con OpenAI (DeepSeek, opencode Zen, etc.)</option>
+            <option value="opencode-local">OpenCode local (CLI, modelos gratis)</option>
+          </select>
+        </div>
+
+        <div id="provider-fields-anthropic" class="provider-fields">
+          <div class="field">
+            <label for="anthropic-key">Clave de API de Anthropic</label>
+            <input id="anthropic-key" type="password" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="anthropic-model">Modelo</label>
+            <input id="anthropic-model" type="text" value="claude-sonnet-5">
+          </div>
+        </div>
+
+        <div id="provider-fields-openai" class="provider-fields" hidden>
+          <div class="field">
+            <label for="openai-base-url">URL base</label>
+            <input id="openai-base-url" type="text" placeholder="https://api.deepseek.com/v1">
+            <p class="dialog__note">Ej: DeepSeek usa <code>https://api.deepseek.com/v1</code>; opencode Zen usa <code>https://opencode.ai/zen/v1</code>.</p>
+          </div>
+          <div class="field">
+            <label for="openai-model">Modelo</label>
+            <input id="openai-model" type="text" placeholder="Ej: deepseek-chat, claude-sonnet-4.5 o gpt-4o">
+          </div>
+          <div class="field">
+            <label for="openai-key">Clave de API</label>
+            <input id="openai-key" type="password" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="openai-reasoning">Razonamiento del modelo</label>
+            <select id="openai-reasoning">
+              <option value="auto">Automático (lo que decida el proveedor)</option>
+              <option value="max">Máximo</option>
+              <option value="high">Alto</option>
+              <option value="low">Bajo (más rápido)</option>
+              <option value="none">Sin razonamiento (lo más rápido)</option>
+            </select>
+            <p class="dialog__note">DeepSeek (<code>deepseek-flash</code> / <code>deepseek-v4-pro</code>) razona por defecto y eso consume tiempo y tokens. Si el proveedor no acepta este ajuste, se reintenta sin él.</p>
+          </div>
+        </div>
+
+        <div id="provider-fields-opencode" class="provider-fields" hidden>
+          <div class="field">
+            <label for="opencode-model">Modelo (OpenCode CLI)</label>
+            <select id="opencode-model"></select>
+            <button type="button" id="opencode-refresh-models" class="btn btn--secondary btn--small">Actualizar modelos</button>
+            <p class="dialog__note" id="opencode-hint">Requiere <code>node server.js</code> corriendo: ejecuta el CLI de OpenCode instalado en esta máquina con un modelo gratuito (el nivel gratis de opencode Zen sólo funciona desde el propio cliente OpenCode, no desde un navegador). Se listan primero los modelos verificados como funcionando.</p>
+          </div>
+        </div>
+
+        <div class="view__actions config-actions">
+          <button type="button" id="provider-test" class="btn btn--secondary">Probar conexión</button>
+          <span class="config-test" id="provider-test-result" role="status" aria-live="polite"></span>
+          <button type="submit" class="btn btn--primary">Guardar</button>
+        </div>
+        <p class="dialog__note">La clave se guarda únicamente en tu navegador (localStorage) y no se envía a ningún otro servidor que no sea el proveedor elegido. Si tu proveedor bloquea CORS (error típico al abrir la app con <code>file://</code>), iniciá <code>node server.js</code> y entrá a <code>http://localhost:3000</code>: las llamadas se enrutan a través de un proxy local.</p>
+        <p class="dialog__note config-saved" id="provider-saved" role="status" aria-live="polite"></p>
+      </form>
+
+      <form id="form-critic-provider" class="ledger config-card" novalidate>
+        <p class="ledger__section-label">Crítico (técnica 3)</p>
+        <p class="dialog__note">Sólo la auditoría posterior a la ejecución usa este modelo. El creador que aplica las correcciones sigue usando el Generador.</p>
+        <div class="field">
+          <label class="config-check"><input type="checkbox" id="critic-same" checked> Usar el mismo que el generador</label>
+        </div>
+        <div id="critic-own" hidden>
+        <div class="field">
+          <label for="critic-provider-select">Proveedor</label>
+          <select id="critic-provider-select" name="provider">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai-compatible">Compatible con OpenAI (DeepSeek, opencode Zen, etc.)</option>
+            <option value="opencode-local">OpenCode local (CLI, modelos gratis)</option>
+          </select>
+        </div>
+
+        <div id="critic-provider-fields-anthropic" class="provider-fields">
+          <div class="field">
+            <label for="critic-anthropic-key">Clave de API de Anthropic</label>
+            <input id="critic-anthropic-key" type="password" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="critic-anthropic-model">Modelo</label>
+            <input id="critic-anthropic-model" type="text" value="claude-sonnet-5">
+          </div>
+        </div>
+
+        <div id="critic-provider-fields-openai" class="provider-fields" hidden>
+          <div class="field">
+            <label for="critic-openai-base-url">URL base</label>
+            <input id="critic-openai-base-url" type="text" placeholder="https://api.deepseek.com/v1">
+            <p class="dialog__note">Ej: DeepSeek usa <code>https://api.deepseek.com/v1</code>; opencode Zen usa <code>https://opencode.ai/zen/v1</code>.</p>
+          </div>
+          <div class="field">
+            <label for="critic-openai-model">Modelo</label>
+            <input id="critic-openai-model" type="text" placeholder="Ej: deepseek-chat, claude-sonnet-4.5 o gpt-4o">
+          </div>
+          <div class="field">
+            <label for="critic-openai-key">Clave de API</label>
+            <input id="critic-openai-key" type="password" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="critic-openai-reasoning">Razonamiento del modelo</label>
+            <select id="critic-openai-reasoning">
+              <option value="auto">Automático (lo que decida el proveedor)</option>
+              <option value="max">Máximo</option>
+              <option value="high">Alto</option>
+              <option value="low">Bajo (más rápido)</option>
+              <option value="none">Sin razonamiento (lo más rápido)</option>
+            </select>
+            <p class="dialog__note">DeepSeek (<code>deepseek-flash</code> / <code>deepseek-v4-pro</code>) razona por defecto y eso consume tiempo y tokens. Si el proveedor no acepta este ajuste, se reintenta sin él.</p>
+          </div>
+        </div>
+
+        <div id="critic-provider-fields-opencode" class="provider-fields" hidden>
+          <div class="field">
+            <label for="critic-opencode-model">Modelo (OpenCode CLI)</label>
+            <select id="critic-opencode-model"></select>
+            <button type="button" id="critic-opencode-refresh-models" class="btn btn--secondary btn--small">Actualizar modelos</button>
+            <p class="dialog__note" id="critic-opencode-hint">Se listan los modelos de OpenCode; requiere <code>node server.js</code>.</p>
+          </div>
+        </div>
+
+        <div class="view__actions config-actions">
+          <button type="button" id="critic-provider-test" class="btn btn--secondary">Probar conexión</button>
+          <span class="config-test" id="critic-provider-test-result" role="status" aria-live="polite"></span>
+          <button type="submit" class="btn btn--primary">Guardar crítico</button>
+        </div>
+        </div>
+        <p class="dialog__note config-saved" id="critic-saved" role="status" aria-live="polite"></p>
+      </form>
+
+      <section class="ledger config-card" id="config-media" aria-labelledby="config-media-title">
+        <p class="ledger__section-label" id="config-media-title">Multimedia</p>
+
+        <div class="field config-pref">
+          <span class="config-pref__label" id="pref-images-label">Imágenes IA</span>
+          <div class="config-chips" id="media-pref-images" role="radiogroup" aria-labelledby="pref-images-label"></div>
+        </div>
+        <div class="field config-pref">
+          <span class="config-pref__label" id="pref-stock-label">Fotos y videos de stock</span>
+          <div class="config-chips" id="media-pref-stock" role="radiogroup" aria-labelledby="pref-stock-label"></div>
+        </div>
+        <div class="field config-pref">
+          <span class="config-pref__label" id="pref-vision-label">Visión (análisis de imágenes)</span>
+          <div class="config-chips" id="media-pref-vision" role="radiogroup" aria-labelledby="pref-vision-label"></div>
+          <div id="vision-cfg" class="provider-fields" hidden>
+            <label class="config-check"><input type="checkbox" id="vision-use-generator" checked> Usar las credenciales del generador</label>
+            <div id="vision-own" hidden>
+              <div class="field" id="vision-own-url-field">
+                <label for="vision-base-url">URL base</label>
+                <input id="vision-base-url" type="text" placeholder="https://api.deepseek.com" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="vision-api-key">Clave de API</label>
+                <input id="vision-api-key" type="password" autocomplete="off">
+              </div>
+            </div>
+            <div class="field">
+              <label for="vision-model">Modelo de visión</label>
+              <input id="vision-model" type="text" placeholder="deepseek-flash" autocomplete="off">
+              <p class="dialog__note" id="vision-model-note">Debe ser un modelo con visión: <code>deepseek-flash</code> acepta imágenes; <code>deepseek-v4-pro</code> no (según la documentación de DeepSeek). Formatos: JPEG, PNG, GIF y WebP.</p>
+            </div>
+            <p class="dialog__note" id="vision-cfg-status" role="status"></p>
+          </div>
+        </div>
+        <div class="field config-pref">
+          <span class="config-pref__label" id="pref-video-label">Video (técnica 5)</span>
+          <div class="config-chips" id="media-pref-video" role="radiogroup" aria-labelledby="pref-video-label"></div>
+        </div>
+
+        <p class="dialog__note">Sin elegir nada, el servidor usa su orden por defecto (Cloudflare y después Pollinations; Pexels y después Pixabay; la visión con Gemini). Si elegís un servicio concreto, se usa sólo ese. Las preferencias se guardan en este navegador.</p>
+
+        <div class="field config-pref" id="media-keys">
+          <span class="config-pref__label" id="media-keys-title">Claves de servicios</span>
+          <div class="provider-fields">
+            <div class="field"><label for="mk-pexels">Pexels API key</label><input id="mk-pexels" type="password" autocomplete="off" data-mk="pexels"></div>
+            <div class="field"><label for="mk-pixabay">Pixabay API key (opcional)</label><input id="mk-pixabay" type="password" autocomplete="off" data-mk="pixabay"></div>
+            <div class="field"><label for="mk-cf-account">Cloudflare Account ID</label><input id="mk-cf-account" type="password" autocomplete="off" data-mk="cloudflareAccountId"></div>
+            <div class="field"><label for="mk-cf-token">Cloudflare API Token</label><input id="mk-cf-token" type="password" autocomplete="off" data-mk="cloudflareToken"></div>
+            <div class="field"><label for="mk-gemini">Gemini API key</label><input id="mk-gemini" type="password" autocomplete="off" data-mk="gemini"></div>
+            <div class="field"><label for="mk-pollinations">Pollinations key (opcional)</label><input id="mk-pollinations" type="password" autocomplete="off" data-mk="pollinations"></div>
+          </div>
+          <label class="config-check"><input type="checkbox" id="mk-show"> Mostrar claves</label>
+          <div class="view__actions config-actions">
+            <button type="button" class="btn btn--secondary" id="mk-save">Guardar claves</button>
+            <button type="button" class="btn btn--secondary" id="mk-clear">Borrar claves</button>
+          </div>
+          <p class="dialog__note config-saved" id="mk-saved" role="status" aria-live="polite"></p>
+          <p class="dialog__note">Se guardan en este navegador y viajan al servidor local solo en cada pedido que las usa; si dejás un campo vacío se usa la clave del .env del servidor (si existe). Los valores nunca se muestran en el estado de los servicios.</p>
+        </div>
+      </section>
+
+      </div>
+    </section>
+
+    <section id="view-banco" class="view" data-view="banco" hidden>
+      <header class="view__head">
+        <p class="view__eyebrow">05 · Banco</p>
+        <h2>Landing pages guardadas</h2>
+        <svg class="squiggle" viewBox="0 0 340 24" aria-hidden="true" focusable="false"><path d="M4 16c20-14 40-14 60 0s40 14 60 0 40-14 60 0 40 14 60 0 40-14 60 0"/></svg>
+        <p class="view__hint" id="bank-empty">Todavía no guardaste ninguna landing page.</p>
+        <p class="view__hint status--error" id="bank-notice" hidden></p>
+        <button type="button" id="bank-migrate" class="btn btn--secondary" hidden>Importar diseños guardados en el navegador al disco</button>
+      </header>
+      <div class="bank-grid" id="bank-grid"></div>
+    </section>
+
+  </main>
+</div>
+
+<dialog id="dialog-confirm" class="dialog" aria-label="Confirmación">
+  <h2 id="dialog-confirm-title"></h2>
+  <p id="dialog-confirm-message"></p>
+  <div class="view__actions" id="dialog-confirm-actions"></div>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/searchcursor.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closetag.min.js"></script>
+<!-- Si el CDN de arriba falla (offline, bloqueo de red), app.js detecta
+     que `window.CodeMirror` no existe y usa un <textarea> con la misma
+     interfaz (createEditor) como respaldo: el Estudio sigue funcionando. -->
+<script src="app.js"></script>
+<script defer src="loaders.js"></script>
+<script defer src="fx.js"></script>
+</body>
+</html>

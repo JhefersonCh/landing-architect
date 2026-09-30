@@ -1,0 +1,13 @@
+.env
+media/
+runs/
+node_modules/
+tests/*.log
+tests/*.pid
+
+.lean-ctx
+banco
+tests
+.claude
+8 Técnicas Avanzadas de Diseño de Landing Pages con IA - Guía y Prompts.pdf
+TODO.md

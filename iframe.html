@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vista previa</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #ffffff; }
+  #sandbox-frame { border: 0; width: 100%; height: 100%; display: block; }
+  .empty-state {
+    font-family: system-ui, sans-serif;
+    color: #6b6b6b;
+    padding: 2rem;
+  }
+</style>
+</head>
+<body>
+<p class="empty-state" id="empty-state">Esperando contenido generado…</p>
+<iframe
+  id="sandbox-frame"
+  title="Contenido HTML generado por el modelo"
+  sandbox="allow-scripts"
+  hidden
+></iframe>
+<script>
+  // Esta página es la superficie de preview aislada: el HTML generado por el
+  // modelo ejecutor nunca corre en el contexto de la app principal. Llega acá
+  // vía postMessage (la app principal carga este documento dentro de un
+  // <iframe sandbox="allow-scripts"> sin "allow-same-origin") y se renderiza
+  // en un segundo iframe sandboxeado mediante `srcdoc`, así queda aislado dos
+  // niveles del contexto principal.
+  // Además de "render", esta página relee dos mensajes del namespace
+  // "lpa:" para el click-to-code del Estudio (ver DOCUMENTACION.md):
+  //   - "lpa:inspect-toggle" baja del padre (index.html) hacia el iframe
+  //     interno que tiene el HTML generado (activa/desactiva el modo).
+  //   - "lpa:inspect-result" sube desde ese iframe interno hacia el padre
+  //     (el elemento que el usuario clickeó). Sólo se reenvía si vino
+  //     efectivamente de nuestro propio sandbox-frame, nunca de cualquier
+  //     origen que le escriba a esta ventana.
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || typeof data.type !== 'string') return;
+    var frame = document.getElementById('sandbox-frame');
+
+    if (data.type === 'render' && typeof data.html === 'string') {
+      var empty = document.getElementById('empty-state');
+      frame.srcdoc = data.html;
+      frame.hidden = false;
+      if (empty) empty.hidden = true;
+      return;
+    }
+    if (data.type === 'lpa:inspect-toggle') {
+      if (frame && frame.contentWindow) {
+        try { frame.contentWindow.postMessage(data, '*'); } catch (e) { /* no-op */ }
+      }
+      return;
+    }
+    if (data.type === 'lpa:inspect-result') {
+      if (frame && event.source === frame.contentWindow) {
+        try { window.parent.postMessage(data, '*'); } catch (e) { /* no-op */ }
+      }
+    }
+  });
+</script>
+</body>
+</html>
