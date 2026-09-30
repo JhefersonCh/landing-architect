@@ -523,6 +523,16 @@
             <iframe id="preview-frame" title="Vista previa de la landing page generada" sandbox="allow-scripts"></iframe>
             <!-- Proyectos multi-archivo (Vite/Next): apunta al dev server local (127.0.0.1:<puerto>), otro origen que esta app. allow-same-origin sólo significa "conservá TU origen" (el del dev server); nunca es el de la app. Ver DOCUMENTACION.md. -->
             <iframe id="preview-project-frame" title="Vista previa del proyecto (servidor de desarrollo local)" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" hidden></iframe>
+            <div class="preview__stopped" id="preview-server-stopped" role="status" hidden>
+              <p class="preview__stopped-text">Servidor detenido</p>
+              <button type="button" id="btn-preview-start" class="btn btn--primary">Iniciar</button>
+            </div>
+            <button type="button" id="btn-console-toggle" class="console-fab" aria-haspopup="dialog" aria-expanded="false" aria-controls="console-modal" hidden>
+              <span class="console-fab__icon" aria-hidden="true">&gt;_</span>
+              <span class="console-fab__label">Consola</span>
+              <span class="console-badge console-badge--error" id="console-badge-errors" hidden>0</span>
+              <span class="console-badge console-badge--warn" id="console-badge-warns" hidden>0</span>
+            </button>
           </div>
         </div>
       </div>
@@ -833,6 +843,43 @@
 <!-- Si el CDN de arriba falla (offline, bloqueo de red), app.js detecta
      que `window.CodeMirror` no existe y usa un <textarea> con la misma
      interfaz (createEditor) como respaldo: el Estudio sigue funcionando. -->
+<section class="cmodal" id="console-modal" role="dialog" aria-modal="false" aria-labelledby="console-modal-title" tabindex="-1" hidden>
+  <header class="cmodal__header" id="console-modal-header">
+    <h3 class="cmodal__title" id="console-modal-title">Consola</h3>
+    <div class="cmodal__views" id="console-views" role="tablist" aria-label="Origen de los mensajes">
+      <button type="button" id="console-view-browser" class="cmodal__view is-active" role="tab" data-console-view="browser" aria-selected="true" aria-controls="console-list" tabindex="0">Navegador</button>
+      <button type="button" id="console-view-server" class="cmodal__view" role="tab" data-console-view="server" aria-selected="false" aria-controls="console-server-list" tabindex="-1" hidden>Servidor</button>
+    </div>
+    <button type="button" id="btn-console-close" class="cmodal__close" aria-label="Cerrar la consola">&times;</button>
+  </header>
+  <div class="cmodal__server" id="console-server-bar" hidden>
+    <span class="cmodal__pill cmodal__pill--stopped" id="console-server-pill" role="status">Detenido</span>
+    <span class="cmodal__where" id="console-server-where"></span>
+    <span class="cmodal__spacer"></span>
+    <button type="button" id="btn-server-stop" class="cmodal__btn">Detener</button>
+    <button type="button" id="btn-server-start" class="cmodal__btn">Iniciar</button>
+    <button type="button" id="btn-server-restart" class="cmodal__btn">Reiniciar</button>
+  </div>
+  <div class="cmodal__toolbar">
+    <div class="cmodal__seg" role="group" aria-label="Filtrar mensajes de la consola">
+      <button type="button" class="cmodal__segbtn is-active" data-console-filter="all" aria-pressed="true">Todo</button>
+      <button type="button" class="cmodal__segbtn" data-console-filter="error" aria-pressed="false">Errores</button>
+      <button type="button" class="cmodal__segbtn" data-console-filter="warn" aria-pressed="false">Advertencias</button>
+      <button type="button" class="cmodal__segbtn" data-console-filter="log" aria-pressed="false">Logs</button>
+    </div>
+    <input type="search" id="console-search" class="cmodal__search" placeholder="Buscar…" aria-label="Buscar en la consola" autocomplete="off" spellcheck="false">
+    <button type="button" id="btn-console-fix-all" class="cmodal__btn cmodal__btn--accent" hidden>Arreglar todos</button>
+    <button type="button" id="btn-console-copy" class="cmodal__btn">Copiar</button>
+    <button type="button" id="btn-console-clear" class="cmodal__btn">Limpiar</button>
+    <button type="button" id="btn-console-autoscroll" class="cmodal__btn cmodal__toggle" aria-pressed="true" title="Seguir los mensajes nuevos">Auto-scroll</button>
+  </div>
+  <p class="cmodal__summary" id="console-summary" role="status" aria-live="polite">Sin mensajes.</p>
+  <ol class="cmodal__list console__list" id="console-list" role="log" aria-live="off" aria-label="Mensajes de la consola de la página generada" tabindex="0"></ol>
+  <ol class="cmodal__list console__list" id="console-server-list" role="log" aria-live="off" aria-label="Salida del servidor de desarrollo" tabindex="0" hidden></ol>
+  <div class="cmodal__resize" id="console-resize" role="separator" aria-orientation="horizontal" aria-label="Redimensionar la consola (flechas)" tabindex="0"></div>
+</section>
+
+<script src="console-capture.js"></script>
 <script src="app.js"></script>
 <script defer src="loaders.js"></script>
 <script defer src="fx.js"></script>

@@ -55,7 +55,9 @@
       }
       return;
     }
-    if (data.type === 'lpa:inspect-result') {
+    if (data.type === 'lpa:inspect-result' || data.type === 'lpa:console') {
+      // Mismo chequeo para la Consola del Estudio ("lpa:console"): errores y
+      // logs de la página generada, sólo si vienen de nuestro sandbox-frame.
       if (frame && event.source === frame.contentWindow) {
         try { window.parent.postMessage(data, '*'); } catch (e) { /* no-op */ }
       }

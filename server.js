@@ -1163,12 +1163,20 @@ function routeBanco(req, res, urlPath) {
  *           inmediato (status "installing") y el cliente consulta /status;
  *           con `wait:true` bloquea hasta ready/error (útil para curl/tests).
  *   GET  /api/preview-project/:id/status -> mismo objeto (renueva el TTL)
- *   POST /api/preview-project/:id/stop
+ *   POST /api/preview-project/:id/stop     -> libera el preview (proceso + workspace + id)
+ *   POST /api/preview-project/:id/halt     -> detiene SÓLO el dev server; el id y los archivos quedan
+ *   POST /api/preview-project/:id/start    -> vuelve a levantar el mismo id con sus archivos actuales;
+ *        si el preview ya no existe y el cuerpo trae {technology, files} crea uno nuevo (otro id)
+ *   POST /api/preview-project/:id/restart  -> halt + start
+ *   GET  /api/preview-project/:id/logs?since=<seq> -> {seq, lines:[{seq,ts,text,stream}], status, message, port, url}
  *   PUT  /api/preview-project/:id/file   {path, content} (HMR del dev server)
+ *   Ningún endpoint ejecuta comandos: sólo aceptan el id (y, start, archivos de respaldo).
  * ========================================================================= */
 
 const RE_PROJECT_COLLECTION = /^\/api\/preview-project\/?$/;
-const RE_PROJECT_ITEM = /^\/api\/preview-project\/([a-f0-9]{12})\/(status|stop|file)\/?$/;
+const PROJECT_ACTIONS = 'status|stop|halt|start|restart|logs|file';
+const RE_PROJECT_ITEM = new RegExp(`^/api/preview-project/([a-f0-9]{12})/(${PROJECT_ACTIONS})/?$`);
+const RE_PROJECT_ANY_ITEM = new RegExp(`^/api/preview-project/([^/]+)/(${PROJECT_ACTIONS})/?$`);
 
 async function readProjectBody(req, res) {
   try {
@@ -1203,8 +1211,41 @@ async function handleProjectItem(req, res, id, action) {
     sendJson(res, 200, view);
     return;
   }
+  if (action === 'logs' && req.method === 'GET') {
+    const q = new URL(req.url || '/', 'http://localhost').searchParams.get('since');
+    if (q !== null && !/^\d{1,12}$/.test(q)) { sendJson(res, 400, { error: 'El parámetro since debe ser un entero.' }); return; }
+    const out = previewRunner.logs(id, q === null ? 0 : Number(q));
+    if (!out) { sendJson(res, 404, { error: 'La vista previa no existe o expiró.' }); return; }
+    sendJson(res, 200, out);
+    return;
+  }
   if (action === 'stop' && req.method === 'POST') {
     sendJson(res, 200, { ok: true, found: previewRunner.stop(id) });
+    return;
+  }
+  if (action === 'halt' && req.method === 'POST') {
+    const view = previewRunner.halt(id);
+    if (!view) { sendJson(res, 404, { error: 'La vista previa no existe o expiró.' }); return; }
+    sendJson(res, 200, view);
+    return;
+  }
+  if ((action === 'start' || action === 'restart') && req.method === 'POST') {
+    const payload = await readProjectBody(req, res);
+    if (!payload) return;
+    try {
+      let view = action === 'start' ? previewRunner.start(id, payload) : previewRunner.restart(id, payload);
+      let replaced = false;
+      if (!view) {
+        // El preview se venció o fue desalojado: se recrea desde los archivos del cliente (id nuevo).
+        if (!payload.files || typeof payload.files !== 'object') { sendJson(res, 404, { error: 'La vista previa no existe o expiró.' }); return; }
+        view = previewRunner.create({ technology: payload.technology, files: payload.files });
+        replaced = true;
+      }
+      sendJson(res, 202, Object.assign({ replaced }, view));
+    } catch (e) {
+      if (e && e.code === 'VALIDATION') { sendJson(res, 400, { error: e.message }); return; }
+      sendJson(res, 500, { error: 'No se pudo iniciar el servidor de la vista previa.' });
+    }
     return;
   }
   if (action === 'file' && req.method === 'PUT') {
@@ -1227,6 +1268,7 @@ function routePreviewProject(req, res, urlPath) {
   let m;
   if (req.method === 'POST' && RE_PROJECT_COLLECTION.test(urlPath)) { handleProjectCreate(req, res); return true; }
   if ((m = urlPath.match(RE_PROJECT_ITEM))) { handleProjectItem(req, res, m[1], m[2]); return true; }
+  if (RE_PROJECT_ANY_ITEM.test(urlPath)) { sendJson(res, 400, { error: 'Id de vista previa inválido.' }); return true; }
   return false;
 }
 

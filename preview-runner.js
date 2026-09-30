@@ -28,6 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { buildConsoleCaptureScript } = require('./console-capture.js');
 const net = require('net');
 const http = require('http');
 const crypto = require('crypto');
@@ -336,11 +337,28 @@ const INSPECTOR_JS = [
   '',
 ].join('\n');
 
+/* Consola del Estudio (errores/logs de la página → app por postMessage).
+ * Mismo criterio que el inspector: sólo en la copia de trabajo del
+ * workspace. A diferencia del inspector va lo MÁS TEMPRANO posible: un
+ * <script src> síncrono como primer hijo de <head> (Vite: index.html; Next:
+ * layout), antes de cualquier otro script, así atrapa los errores de los
+ * módulos que cargan después. En Next, si el layout no permite tocar <head>,
+ * el componente cliente lo carga tarde (useEffect): se pierde lo que tiró la
+ * hidratación inicial, pero se captura todo lo posterior. */
+const CONSOLE_URL = '/__lpa_console.js';
+const CONSOLE_PUBLIC_PATH = 'public/__lpa_console.js';
+const CONSOLE_JS = `${buildConsoleCaptureScript({ mode: 'origin' })}\n`;
+
 const INSPECTOR_NEXT_COMPONENT = [
   "'use client';",
   "import { useEffect } from 'react';",
   'export default function LpaInspector() {',
   '  useEffect(() => {',
+  '    if (!window.__lpaConsole) {',
+  "      const c = document.createElement('script');",
+  `      c.src = '${CONSOLE_URL}';`,
+  '      document.head.appendChild(c);',
+  '    }',
   '    if (window.__lpaInspector) return;',
   "    const s = document.createElement('script');",
   `    s.src = '${INSPECTOR_URL}';`,
@@ -358,6 +376,42 @@ function injectViteInspector(html) {
   if (/<\/body>/i.test(src)) return src.replace(/<\/body>/i, () => `${tag}\n</body>`);
   if (/<\/html>/i.test(src)) return src.replace(/<\/html>/i, () => `${tag}\n</html>`);
   return `${src}\n${tag}\n`;
+}
+
+// Posición (justo después de la etiqueta) para insertar como primer hijo de
+// <head>; cae a <html> y a después del doctype. Ignora comentarios HTML.
+function afterHeadIndex(src) {
+  const insideComment = (idx) => src.lastIndexOf('<!--', idx) > src.lastIndexOf('-->', idx);
+  const find = (re) => {
+    const g = new RegExp(re.source, 'gi');
+    let m;
+    while ((m = g.exec(src))) if (!insideComment(m.index)) return { end: m.index + m[0].length, isHead: /^<head/i.test(m[0]) };
+    return null;
+  };
+  return find(/<head(?:\s[^>]*)?>/) || find(/<html(?:\s[^>]*)?>/) || find(/<!doctype[^>]*>/) || { end: 0, isHead: false };
+}
+
+// Vite: <script src> síncrono como primer hijo de <head>, en la MISMA línea
+// (no corre las líneas del código original).
+function injectViteConsole(html) {
+  const src = String(html || '');
+  if (src.indexOf(CONSOLE_URL) !== -1) return src;
+  const at = afterHeadIndex(src).end;
+  return `${src.slice(0, at)}<script src="${CONSOLE_URL}"></script>${src.slice(at)}`;
+}
+
+// Next: script síncrono dentro de <head> del layout (lo crea si sólo hay
+// <html>). Sin <html> ni <head> el layout queda intacto y el componente
+// cliente lo carga tarde. Misma línea: no corre líneas.
+function injectNextConsole(layoutSrc) {
+  const src = String(layoutSrc || '');
+  if (src.indexOf('__lpa_console') !== -1) return src;
+  const tag = `<script src="${CONSOLE_URL}" />`;
+  const head = /<head(?:\s[^>]*)?>/i.exec(src);
+  if (head) return `${src.slice(0, head.index + head[0].length)}${tag}${src.slice(head.index + head[0].length)}`;
+  const html = /<html(?:\s[^>]*)?>/i.exec(src);
+  if (html) return `${src.slice(0, html.index + html[0].length)}<head>${tag}</head>${src.slice(html.index + html[0].length)}`;
+  return src;
 }
 
 // Importa el componente cliente en el layout y lo monta antes de </body>.
@@ -381,15 +435,16 @@ function nextAppDirOf(paths) {
 // el archivo `p`. El resto de los archivos pasan tal cual.
 function instrumentForWorkspace(templateName, p, content, appDir) {
   if (templateName === 'next') {
-    return new RegExp(`^${appDir}/layout\\.(jsx|js|mjs)$`).test(p) ? injectNextInspector(content) : content;
+    return new RegExp(`^${appDir}/layout\\.(jsx|js|mjs)$`).test(p) ? injectNextInspector(injectNextConsole(content)) : content;
   }
-  return p === 'index.html' ? injectViteInspector(content) : content;
+  return p === 'index.html' ? injectViteConsole(injectViteInspector(content)) : content;
 }
 
 function writeInspectorAssets(ws, templateName, appDir) {
   const pub = path.join(ws, INSPECTOR_PUBLIC_PATH);
   fs.mkdirSync(path.dirname(pub), { recursive: true });
   fs.writeFileSync(pub, INSPECTOR_JS);
+  fs.writeFileSync(path.join(ws, CONSOLE_PUBLIC_PATH), CONSOLE_JS);
   if (templateName === 'next') fs.writeFileSync(path.join(ws, appDir, '__lpa_inspector.jsx'), INSPECTOR_NEXT_COMPONENT);
 }
 
@@ -455,10 +510,14 @@ function createPreviewRunner(options) {
   try { fs.rmSync(previewsRoot, { recursive: true, force: true }); } catch (e) { /* no-op */ }
   fs.mkdirSync(previewsRoot, { recursive: true });
 
-  function addLog(pv, text) {
+  // Cada línea lleva un `seq` monótono (nunca se reinicia mientras viva el
+  // preview, ni al detener/iniciar) para que el cliente pida sólo lo nuevo
+  // con GET .../logs?since=<seq>. stream: stdout | stderr | system.
+  function addLog(pv, text, stream) {
+    const ts = Date.now();
     stripAnsi(String(text)).split(/\r?\n/).forEach((line) => {
       if (!line.trim()) return;
-      pv.logs.push(line.slice(0, 500));
+      pv.logs.push({ seq: ++pv.logSeq, ts, text: line.slice(0, 500), stream: stream === 'stdout' || stream === 'stderr' ? stream : 'system' });
     });
     if (pv.logs.length > LOG_MAX_LINES) pv.logs.splice(0, pv.logs.length - LOG_MAX_LINES);
   }
@@ -473,7 +532,7 @@ function createPreviewRunner(options) {
       url: pv.status === 'ready' ? pv.url : null,
       port: pv.port || null,
       error: pv.error || null,
-      logsTail: pv.logs.slice(-40),
+      logsTail: pv.logs.slice(-40).map((l) => l.text),
       installMs: pv.installMs || 0,
       startMs: pv.startMs || 0,
       ignored: pv.ignored,
@@ -504,9 +563,9 @@ function createPreviewRunner(options) {
       });
       if (pv) pv.installChild = child;
       let out = '';
-      const onData = (d) => { out += d; if (pv) addLog(pv, d); };
-      child.stdout.on('data', onData);
-      child.stderr.on('data', onData);
+      const onData = (stream) => (d) => { out += d; if (pv) addLog(pv, d, stream); };
+      child.stdout.on('data', onData('stdout'));
+      child.stderr.on('data', onData('stderr'));
       const timer = setTimeout(() => { killGroup(child, 'SIGKILL'); }, INSTALL_TIMEOUT_MS);
       child.on('error', (e) => { clearTimeout(timer); reject(new Error(`No se pudo ejecutar npm: ${e.message}`)); });
       child.on('close', (code, signal) => {
@@ -557,6 +616,7 @@ function createPreviewRunner(options) {
 
   // Garantiza que la plantilla esté instalada. Devuelve { dir, installMs }.
   function ensureTemplate(name, pv) {
+    if (typeof opts.ensureTemplate === 'function') return Promise.resolve(opts.ensureTemplate(name, pv)); // sólo para pruebas
     if (templatePromises.has(name)) return templatePromises.get(name);
     const def = TEMPLATE_DEFS[name];
     const dir = path.join(templatesRoot, name);
@@ -647,7 +707,7 @@ function createPreviewRunner(options) {
       const hasLayout = ['jsx', 'js', 'mjs'].some((e) => pv.files.has(`${appDir}/layout.${e}`));
       if (!hasLayout) {
         fs.mkdirSync(path.join(ws, appDir), { recursive: true });
-        fs.writeFileSync(path.join(ws, appDir, 'layout.jsx'), injectNextInspector(DEFAULT_NEXT_LAYOUT));
+        fs.writeFileSync(path.join(ws, appDir, 'layout.jsx'), injectNextInspector(injectNextConsole(DEFAULT_NEXT_LAYOUT)));
         pv.filePaths.add(`${appDir}/layout.jsx`);
         addLog(pv, `Se agregó ${appDir}/layout.jsx por defecto (faltaba).`);
       }
@@ -665,11 +725,11 @@ function createPreviewRunner(options) {
     pv.message = message;
   }
 
-  async function waitUntilReady(pv) {
+  async function waitUntilReady(pv, gen) {
     const deadline = Date.now() + readyTimeoutMs;
     let consecutive500 = 0;
     while (Date.now() < deadline) {
-      if (pv.status === 'stopped') throw new Error('La preview fue detenida.');
+      if (pv.status === 'stopped' || pv.gen !== gen) throw new Error('La preview fue detenida.');
       if (pv.exited) throw new Error(`El servidor de desarrollo terminó antes de estar listo (${pv.exitInfo}).`);
       // eslint-disable-next-line no-await-in-loop
       const r = await httpGet(`http://127.0.0.1:${pv.port}/`, 8000);
@@ -738,29 +798,41 @@ function extractViteError(body) {
     } else {
       args = [path.join('node_modules', 'vite', 'bin', 'vite.js'), '--config', 'vite.config.mjs', '--host', '127.0.0.1', '--port', String(pv.port), '--strictPort'];
     }
-    const child = spawn(process.execPath, args, { cwd: pv.dir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let file = process.execPath;
+    if (typeof opts.devServerCommand === 'function') { // sólo para pruebas: dev server simulado
+      const c = opts.devServerCommand(pv);
+      file = c.file || file;
+      args = c.args || [];
+    }
+    const child = spawn(file, args, { cwd: pv.dir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     pv.child = child;
-    child.stdout.on('data', (d) => addLog(pv, d));
-    child.stderr.on('data', (d) => addLog(pv, d));
-    child.on('error', (e) => { addLog(pv, `spawn error: ${e.message}`); });
+    pv.exited = false;
+    child.stdout.on('data', (d) => addLog(pv, d, 'stdout'));
+    child.stderr.on('data', (d) => addLog(pv, d, 'stderr'));
+    child.on('error', (e) => { addLog(pv, `spawn error: ${e.message}`, 'stderr'); });
     child.on('exit', (code, signal) => {
+      if (pv.child !== child) return; // proceso viejo (detener/iniciar): no pisa el estado del nuevo
       pv.exited = true;
       pv.exitInfo = signal ? `señal ${signal}` : `código ${code}`;
+      addLog(pv, `[servidor] proceso terminado (${pv.exitInfo}).`, 'system');
       if (pv.status === 'ready') { bumpStatus(pv, 'stopped', 'El servidor de la preview terminó.'); }
     });
     return child;
   }
 
   async function launch(pv) {
+    const gen = pv.gen;
+    const gone = () => pv.status === 'stopped' || pv.gen !== gen; // detenida o reemplazada por un inicio nuevo
     try {
+      if (pv.dying) { await pv.dying; if (gone()) return; } // el proceso anterior terminó (o se lo mató)
       bumpStatus(pv, 'installing', 'Preparando dependencias… (la primera vez puede tardar varios minutos)');
       const tpl = await ensureTemplate(pv.templateName, pv);
-      if (pv.status === 'stopped') return;
+      if (gone()) return;
       if (pv.extras && pv.extras.size) {
         bumpStatus(pv, 'installing', `Instalando dependencias del proyecto: ${Array.from(pv.extras).join(', ')}…`);
         const installed = await ensureExtras(tpl, pv.templateName, pv.extras, pv);
         if (installed.length) addLog(pv, `Instaladas: ${installed.join(', ')}`);
-        if (pv.status === 'stopped') return;
+        if (gone()) return;
       }
       pv.installMs = tpl.installMs;
       bumpStatus(pv, 'starting', pv.templateName === 'next' ? 'Levantando Next…' : 'Levantando Vite…');
@@ -769,25 +841,25 @@ function extractViteError(body) {
       pv.port = await getFreePort();
       pv.url = `http://127.0.0.1:${pv.port}/`;
       spawnDevServer(pv, tpl);
-      const rootRes = await waitUntilReady(pv);
+      const rootRes = await waitUntilReady(pv, gen);
       if (pv.templateName !== 'next') await crawlViteModules(pv, rootRes);
       pv.startMs = Date.now() - t0;
-      if (pv.status === 'stopped') return;
+      if (gone()) return;
       bumpStatus(pv, 'ready', 'Vista previa lista.');
       touch(pv);
     } catch (e) {
-      if (pv.status === 'stopped') return;
+      if (gone()) return;
       pv.error = e.message || String(e);
       const isDeps = (e && e.code === 'VALIDATION') || /npm install|paquete "/.test(pv.error);
       bumpStatus(pv, 'error', `${isDeps ? 'Error de dependencias' : 'Error de compilación'}: ${pv.error}`);
-      addLog(pv, pv.error);
+      addLog(pv, pv.error, 'stderr');
       killProcess(pv);
       // Un preview con error no consume cupo: se libera solo a los 2 min.
       if (pv.ttlTimer) clearTimeout(pv.ttlTimer);
       pv.ttlTimer = setTimeout(() => { stop(pv.id); }, 2 * 60 * 1000);
       if (pv.ttlTimer.unref) pv.ttlTimer.unref();
     } finally {
-      pv.launching = null;
+      if (pv.gen === gen) pv.launching = null;
     }
   }
 
@@ -839,6 +911,8 @@ function extractViteError(body) {
       status: 'installing',
       message: 'Preparando dependencias…',
       logs: [],
+      logSeq: 0,
+      gen: 0,
       lastTouch: Date.now(),
       expiresAt: Date.now() + ttlMs,
       exited: false,
@@ -884,11 +958,99 @@ function extractViteError(body) {
     return true;
   }
 
+  // Logs incrementales del dev server: sólo las líneas con seq > since.
+  // Devuelve null si el preview no existe. Leer los logs cuenta como uso
+  // (renueva el TTL) mientras el preview está vivo.
+  function logs(id, since) {
+    const pv = previews.get(id);
+    if (!pv) return null;
+    if (pv.status === 'ready' || pv.status === 'installing' || pv.status === 'starting') touch(pv);
+    const s = Number.isSafeInteger(since) && since > 0 ? since : 0;
+    return {
+      seq: pv.logSeq,
+      lines: pv.logs.filter((l) => l.seq > s).map((l) => ({ seq: l.seq, ts: l.ts, text: l.text, stream: l.stream })),
+      status: pv.status,
+      message: pv.message,
+      port: pv.port || null,
+      url: pv.status === 'ready' ? pv.url : null,
+    };
+  }
+
+  // Detiene SOLO el proceso (dev server / instalación en curso) y conserva el
+  // preview (id, archivos, logs) para poder iniciarlo de nuevo. Si nadie lo
+  // reinicia, se libera al vencer el TTL.
+  function halt(id) {
+    const pv = previews.get(id);
+    if (!pv) return null;
+    if (pv.ttlTimer) clearTimeout(pv.ttlTimer);
+    pv.ttlTimer = setTimeout(() => { stop(pv.id); }, ttlMs);
+    if (pv.ttlTimer.unref) pv.ttlTimer.unref();
+    pv.expiresAt = Date.now() + ttlMs;
+    if (pv.status !== 'stopped') {
+      const was = pv.status;
+      bumpStatus(pv, 'stopped', 'Servidor detenido.');
+      addLog(pv, `[servidor] detenido manualmente (estaba ${was}).`, 'system');
+    }
+    pv.url = null;
+    const child = pv.child;
+    killProcess(pv);
+    pv.installChild = null;
+    pv.dying = (child && !pv.exited) ? new Promise((resolve) => {
+      const t = setTimeout(resolve, 3500);
+      if (t.unref) t.unref();
+      child.once('exit', () => { clearTimeout(t); resolve(); });
+    }) : null;
+    pv.gen += 1; // invalida cualquier launch() en curso
+    pv.launching = null;
+    return publicView(pv);
+  }
+
+  // Vuelve a levantar el MISMO preview (mismo id) con sus archivos actuales.
+  // null si el preview ya no existe (el servidor HTTP cae a create()).
+  // `input` (opcional) = {technology?, files}: el cliente es la fuente de la
+  // verdad de los archivos; se validan igual que en create().
+  function start(id, input) {
+    const pv = previews.get(id);
+    if (!pv) return null;
+    if (closing) throw new ValidationError('El servidor se está cerrando.');
+    if (pv.status === 'installing' || pv.status === 'starting' || pv.status === 'ready') { touch(pv); return publicView(pv); }
+    if (input && input.files && typeof input.files === 'object') {
+      const v = validateProject(input.technology || pv.technology, input.files);
+      pv.technology = input.technology || pv.technology;
+      pv.templateName = v.templateName;
+      pv.files = v.files;
+      pv.extras = v.extras;
+      pv.filePaths = new Set(v.files.keys());
+      pv.ignored = v.ignored;
+    }
+    // 'error' deja un proceso posiblemente vivo: se mata antes de reiniciar.
+    if (pv.status === 'error') halt(id);
+    evictOldestIfNeeded();
+    pv.gen += 1;
+    pv.error = null;
+    pv.port = 0;
+    pv.url = null;
+    pv.startMs = 0;
+    bumpStatus(pv, 'installing', 'Preparando dependencias…');
+    addLog(pv, '[servidor] iniciando…', 'system');
+    touch(pv);
+    pv.launching = launch(pv);
+    return publicView(pv);
+  }
+
+  // Detener + iniciar en un paso (mismo id).
+  function restart(id, input) {
+    const pv = previews.get(id);
+    if (!pv) return null;
+    halt(id);
+    return start(id, input);
+  }
+
   // Escribe un archivo del proyecto vivo (el dev server aplica HMR).
   async function writeFile(id, filePath, content) {
     const pv = previews.get(id);
     if (!pv) return { ok: false, notFound: true };
-    if (pv.status !== 'ready' && pv.status !== 'starting' && pv.status !== 'error') return { ok: false, notFound: true };
+    if (pv.status !== 'ready' && pv.status !== 'starting' && pv.status !== 'error' && pv.status !== 'stopped') return { ok: false, notFound: true };
     const p = normalizeProjectPath(filePath);
     if (typeof content !== 'string') throw new ValidationError('El contenido debe ser texto.');
     if (!p.includes('/') && RESERVED_ROOT_RE.test(p)) throw new ValidationError(`"${p}" es un archivo de configuración reservado.`);
@@ -907,8 +1069,10 @@ function extractViteError(body) {
     }
     const abs = path.join(pv.dir, p);
     if (!abs.startsWith(pv.dir + path.sep)) throw new ValidationError('Ruta fuera del proyecto.');
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, instrumentForWorkspace(pv.templateName, p, content, nextAppDirOf(pv.files)));
+    if (pv.status !== 'stopped') { // detenido: sólo se actualiza el mapa; start() reescribe el workspace entero
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, instrumentForWorkspace(pv.templateName, p, content, nextAppDirOf(pv.files)));
+    }
     pv.files.set(p, content);
     pv.filePaths.add(p);
     touch(pv);
@@ -930,11 +1094,12 @@ function extractViteError(body) {
     return Array.from(previews.values()).map(publicView);
   }
 
-  return { create, waitFor, status, stop, writeFile, killAllSync, list, templatesRoot, previewsRoot };
+  return { create, waitFor, status, stop, halt, start, restart, logs, writeFile, killAllSync, list, templatesRoot, previewsRoot };
 }
 
 module.exports = {
   createPreviewRunner, parseFileBlocks, looksLikeFileBlocks, validateProject, validateFileContent, normalizeProjectPath,
   scanImports, ValidationError, ALLOWED_DEPS, TEMPLATE_DEFS, TECH_TO_TEMPLATE,
   INSPECTOR_JS, INSPECTOR_URL, injectViteInspector, injectNextInspector, instrumentForWorkspace,
+  CONSOLE_JS, CONSOLE_URL, injectViteConsole, injectNextConsole,
 };

@@ -812,6 +812,7 @@ const TECHNOLOGIES = {
     rules: [
       'Proyecto Vite + Vue 3 de VARIOS archivos (entrada `index.html` → `src/main.js` → `src/App.vue`), un componente por archivo `.vue` dentro de `src/components/`',
       'Composition API con `<script setup>`; Vue, GSAP, Lenis y three.js ya están instalados: importalos desde npm (nada de CDN)',
+      'Refs: `.value` SOLO dentro de `<script>`. En el `<template>` Vue los desenvuelve solo: escribí `seleccion.id`, nunca `seleccion.value.id` (con `.value` en el template da `undefined` y la página no renderiza). Inicializá los refs que se leen en el template con un valor válido (nunca `null` si después accedés a sus propiedades) o protegelos con `?.`/`v-if`',
     ],
   },
   nextjs: {
@@ -5841,6 +5842,230 @@ function injectInspector(html) {
   return src + INSPECTOR_SCRIPT;
 }
 
+/* ---- Consola del Estudio: captura de errores/logs de la preview ----
+ * El script vive en console-capture.js (clásico en el navegador, CommonJS en
+ * Node). Se inyecta SOLO en la copia que va a la preview. */
+const CONSOLE_CAPTURE_LIB = (typeof globalThis !== 'undefined' && globalThis.LPA_CONSOLE_CAPTURE)
+  || (typeof require === 'function' ? (() => { try { return require('./console-capture.js'); } catch (e) { return null; } })() : null);
+
+function buildConsoleScript(cfg) {
+  return CONSOLE_CAPTURE_LIB ? CONSOLE_CAPTURE_LIB.buildConsoleCaptureScript(cfg) : '';
+}
+
+// Inserta <script>…</script> como PRIMER elemento de <head>, en la MISMA
+// línea que la etiqueta (sin saltos) para que los números de línea del
+// código original no se corran. Devuelve { html, info } con
+// info = { line, col, len } (línea 1-based y columna 0-based donde se insertó
+// y largo insertado) para corregir columnas en esa única línea; info null si
+// no se inyectó nada.
+function injectConsoleCaptureInfo(html, script) {
+  const src = String(html || '');
+  if (!src || !script) return { html: src, info: null };
+  const tag = '<script>' + script.replace(/<\/(script)/gi, '<\\/$1') + '</script>';
+  const insideComment = (idx) => src.lastIndexOf('<!--', idx) > src.lastIndexOf('-->', idx);
+  let at = -1;
+  const tryRe = (re) => {
+    const g = new RegExp(re.source, 'gi');
+    let m;
+    while ((m = g.exec(src))) { if (!insideComment(m.index)) { at = m.index + m[0].length; return true; } }
+    return false;
+  };
+  if (!tryRe(/<head(?:\s[^>]*)?>/) && !tryRe(/<html(?:\s[^>]*)?>/) && !tryRe(/<!doctype[^>]*>/)) at = 0;
+  const before = src.slice(0, at);
+  const nl = before.lastIndexOf('\n');
+  return {
+    html: before + tag + src.slice(at),
+    info: { line: before.split('\n').length, col: at - (nl + 1), len: tag.length },
+  };
+}
+
+function injectConsoleCapture(html, script) { return injectConsoleCaptureInfo(html, script).html; }
+
+// Mapea una posición reportada por la preview a la del código ORIGINAL: las
+// líneas no cambian (el script va en la misma línea); en la línea de
+// inserción, lo que quedó después del script se corrió `len` columnas.
+function mapConsoleLocation(info, line, col) {
+  if (!info || !line || line !== info.line || !col) return { line, col };
+  return { line, col: col > info.col + info.len ? col - info.len : col };
+}
+
+// Mensaje de la consola desde la preview. Con previewUrl (dev server) se
+// exige además el ORIGEN del proyecto; sin él (srcdoc anidado, origen opaco)
+// alcanza con que la fuente sea el iframe de la preview.
+function isTrustedConsoleMessage(ev, frameWindow, previewUrl) {
+  if (!ev || !frameWindow || ev.source !== frameWindow) return false;
+  const d = ev.data;
+  if (!d || typeof d !== 'object' || d.type !== 'lpa:console') return false;
+  if (previewUrl) {
+    let origin;
+    try { origin = new URL(previewUrl).origin; } catch (e) { return false; }
+    if (!origin || origin === 'null' || ev.origin !== origin) return false;
+  }
+  return true;
+}
+
+const CONSOLE_LEVELS = ['log', 'info', 'warn', 'error', 'debug'];
+
+// Sanea un mensaje crudo de la preview (viene de código generado por un
+// modelo: nada se asume). Devuelve null si no es un mensaje de consola.
+function normalizeConsoleEntry(d) {
+  if (!d || typeof d !== 'object') return null;
+  const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const int = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const level = CONSOLE_LEVELS.indexOf(d.level) !== -1 ? d.level : (d.level === 'heartbeat' ? 'heartbeat' : null);
+  if (!level) return null;
+  return {
+    level,
+    message: str(d.message, 4096),
+    source: str(d.source, 600),
+    line: int(d.line),
+    col: int(d.col),
+    stack: str(d.stack, 4096),
+    ts: Number.isFinite(d.ts) ? d.ts : Date.now(),
+    kind: str(d.kind, 20),
+    tag: str(d.tag, 20),
+    empty: d.empty === true,
+  };
+}
+
+// Mapea una URL/ruta de script del navegador a un archivo del proyecto
+// (mejor esfuerzo): /src/App.jsx?t=123 (Vite), webpack-internal:///(app-pages-browser)/./app/page.jsx,
+// webpack://_N_E/./app/page.jsx, /@fs/…/src/App.jsx, /_next/static/chunks/app/page.js.
+function resolveConsoleSource(source, filePaths) {
+  const paths = Array.from(filePaths || []);
+  if (!source || !paths.length) return null;
+  let s = String(source);
+  if (/^webpack(?:-internal)?:\/\//i.test(s)) s = s.replace(/^webpack(?:-internal)?:\/\/+/i, '').replace(/^[^/]+\/\.\//, '');
+  let pathname = s;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) { try { pathname = new URL(s).pathname; } catch (e) { /* queda tal cual */ } }
+  pathname = pathname.split('?')[0].split('#')[0];
+  try { pathname = decodeURIComponent(pathname); } catch (e) { /* queda tal cual */ }
+  pathname = pathname.replace(/^\/?_next\/static\/chunks\//, '').replace(/^(\.\/|\/)+/, '');
+  const has = (p) => paths.indexOf(p) !== -1;
+  const swapExt = (p) => {
+    const m = p.match(/^(.*)\.(jsx?|tsx?|mjs|vue)$/i);
+    if (!m) return [p];
+    return [p].concat(['jsx', 'js', 'tsx', 'ts', 'mjs', 'vue'].filter((e) => e !== m[2].toLowerCase()).map((e) => `${m[1]}.${e}`));
+  };
+  const candidates = swapExt(pathname);
+  for (const c of candidates) if (has(c)) return c;
+  for (const c of candidates) {
+    const hit = paths.find((p) => c.endsWith('/' + p) || p.endsWith('/' + c));
+    if (hit) return hit;
+  }
+  const base = pathname.split('/').pop();
+  if (base && /\.[a-z0-9]+$/i.test(base)) {
+    const same = paths.filter((p) => swapExt(base).some((b) => p === b || p.endsWith('/' + b)));
+    if (same.length === 1) return same[0];
+  }
+  return null;
+}
+
+// Rango [start, end) (índices de carácter) de la línea `line` (1-based).
+function lineRangeOf(text, line) {
+  const src = String(text || '');
+  const lines = src.split('\n');
+  const n = Math.min(Math.max(1, line | 0), lines.length);
+  let start = 0;
+  for (let i = 0; i < n - 1; i++) start += lines[i].length + 1;
+  return { start, end: start + lines[n - 1].length, line: n };
+}
+
+// Fragmento numerado de ±radius líneas alrededor de `line`; marca la línea.
+function extractCodeExcerpt(text, line, radius) {
+  const lines = String(text || '').split('\n');
+  if (!line || line < 1 || !lines.length) return '';
+  const r = radius == null ? 8 : radius;
+  const target = Math.min(line, lines.length);
+  const from = Math.max(1, target - r);
+  const to = Math.min(lines.length, target + r);
+  const width = String(to).length;
+  const out = [];
+  for (let i = from; i <= to; i++) {
+    out.push(`${i === target ? '>' : ' '} ${String(i).padStart(width)} | ${lines[i - 1].slice(0, 240)}`);
+  }
+  return out.join('\n');
+}
+
+function consoleCounts(entries) {
+  const c = { error: 0, warn: 0, log: 0 };
+  (entries || []).forEach((e) => {
+    if (e.level === 'error') c.error++;
+    else if (e.level === 'warn') c.warn++;
+    else if (CONSOLE_LEVELS.indexOf(e.level) !== -1) c.log++;
+  });
+  return c;
+}
+
+function formatConsoleClock(ts) {
+  const d = new Date(ts);
+  const p = (n, w) => String(n).padStart(w || 2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Agrupa mensajes repetidos (mismo nivel, texto y ubicación) dentro de cada
+// ejecución (los separadores cortan el grupo): devuelve [{ entry, last, count }]
+// en orden de primera aparición; `last` es la última repetición (hora).
+function groupConsoleEntries(entries) {
+  const out = [];
+  let index = new Map();
+  (entries || []).forEach((e) => {
+    if (e.level === 'separator') { out.push({ entry: e, last: e, count: 1 }); index = new Map(); return; }
+    const k = [e.level, e.message, e.source || '', e.line || 0, e.col || 0].join('\u0001');
+    const g = index.get(k);
+    if (g) { g.count += 1; g.last = e; return; }
+    const ng = { entry: e, last: e, count: 1 };
+    index.set(k, ng);
+    out.push(ng);
+  });
+  return out;
+}
+
+// Búsqueda de texto libre (sin distinguir mayúsculas) en mensaje, origen y stack.
+function consoleMatchesSearch(e, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  if (e.level === 'separator') return false;
+  return [e.message, e.source, e.stack].some((t) => typeof t === 'string' && t.toLowerCase().indexOf(q) !== -1);
+}
+
+// Nivel de una línea de salida del dev server (texto plano, sin ANSI).
+function classifyServerLine(text, stream) {
+  const t = String(text || '');
+  if (/\b(error|err!|failed|exception|cannot find|unresolved)\b|✘|\[vite\] .*server error/i.test(t)) return 'error';
+  if (/\bwarn(ing)?\b/i.test(t)) return 'warn';
+  return stream === 'system' ? 'info' : 'log';
+}
+
+// Quita secuencias ANSI (colores) de un texto.
+function stripConsoleAnsi(s) {
+  return String(s == null ? '' : s).replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
+}
+
+function formatConsoleEntryText(e, where) {
+  if (e.level === 'separator') return e.message || '— nueva ejecución —';
+  const loc = where || (e.line ? `${e.source || 'código'}:${e.line}${e.col ? ':' + e.col : ''}` : e.source);
+  return `[${formatConsoleClock(e.ts)}] ${String(e.level).toUpperCase()} ${e.message}${loc ? ` (${loc})` : ''}${e.stack ? '\n' + e.stack.split('\n').map((l) => '    ' + l.trim()).join('\n') : ''}`;
+}
+
+// Instrucción para el flujo de edición con IA. items = [{ entry, where, file, line, excerpt }].
+function buildConsoleFixInstruction(items) {
+  const list = (items || []).filter((it) => it && it.entry);
+  if (!list.length) return '';
+  const one = list.length === 1;
+  const out = [`Corregí ${one ? 'el error' : `los ${list.length} errores`} que tiró la página al ejecutarse en el navegador (Consola). Hacé el cambio mínimo necesario y no toques nada que no esté relacionado.`];
+  list.forEach((it, i) => {
+    const e = it.entry;
+    out.push('');
+    out.push(`${one ? 'Error' : `Error ${i + 1}`} (${e.level}): ${e.message}`);
+    const loc = it.where || (e.line ? `${e.source || 'código'}:${e.line}${e.col ? ':' + e.col : ''}` : e.source);
+    if (loc) out.push(`Ubicación: ${loc}${it.file && loc.indexOf(it.file) === -1 ? ` (archivo ${it.file})` : ''}`);
+    if (e.stack) out.push(`Stack:\n${e.stack.split('\n').slice(0, 4).map((l) => '  ' + l.trim().slice(0, 200)).join('\n')}`);
+    if (it.excerpt) out.push(`Código alrededor de la línea ${it.line}${it.file ? ` de ${it.file}` : ''} (> marca la línea):\n${it.excerpt}`);
+  });
+  return out.join('\n');
+}
+
 /* =========================================================================
  * 7. ALMACENAMIENTO (localStorage envuelto en try/catch)
  * ========================================================================= */
@@ -6396,6 +6621,9 @@ if (typeof module !== 'undefined' && module.exports) {
     compactHtmlForReview, buildCriticAuditPrompt, parseCriticItems, buildCriticApplyInstruction,
     buildHumanRewritePrompt, countHtmlTags, verifyRewriteStructure,
     buildEditPrompt, diffLines, locateInSource, injectInspector,
+    buildConsoleScript, injectConsoleCapture, injectConsoleCaptureInfo, mapConsoleLocation, isTrustedConsoleMessage, normalizeConsoleEntry,
+    resolveConsoleSource, lineRangeOf, extractCodeExcerpt, consoleCounts, formatConsoleEntryText, buildConsoleFixInstruction,
+    formatConsoleClock, groupConsoleEntries, consoleMatchesSearch, classifyServerLine, stripConsoleAnsi,
     PROJECT_VIEW_MAX_CHARS, PROJECT_ALLOWED_DEPS, PROJECT_VERSION_CAP, projectFilePriority, buildProjectView, projectViewBlockedPaths,
     scanProjectImports, validateProjectEditPath, validateProjectImports, parseProjectEditResponse, diffProjectChanges, putProjectFiles,
     buildProjectEditPrompt, projectImportLines, countProjectTags, projectClassValues, verifyProjectRewriteFile, filterProjectRewrite,
@@ -6456,6 +6684,14 @@ if (typeof document !== 'undefined') {
       promptEditDebounceTimer: null,
       studioDraftDebounceTimer: null,
       studioView: 'preview',     // "preview" | "code": qué panel del Estudio se ve cuando no está Dividido
+      consoleModal: {            // modal flotante de la Consola (Navegador / Servidor)
+        open: false, view: 'browser', search: '', autoScroll: true, rect: null, lastFocus: null,
+        pollTimer: null, polling: false, pollMs: 1000, pulseTimer: null,
+      },
+      consoleLog: {              // Consola del Estudio (errores/logs de la preview)
+        entries: [], filter: 'all', run: '', inst: null, awaiting: false, inject: null,
+        empty: false, lastHint: '', renderTimer: null, seq: 0, runSeq: 0,
+      },
       splitMode: false,          // Dividir: ambos paneles lado a lado
       studioSplitRatio: 50,      // % de ancho del panel de código en modo Dividir
       studioHeightPx: null,      // altura actual del Estudio en px (persistida)
@@ -6567,6 +6803,32 @@ if (typeof document !== 'undefined') {
       els.studioFileSelect = document.getElementById('studio-file-select');
       els.studioFileLabel = document.getElementById('studio-file-label');
       els.ejecutorLog = document.getElementById('ejecutor-log');
+      els.consoleList = document.getElementById('console-list');
+      els.consoleSummary = document.getElementById('console-summary');
+      els.consoleBadgeErrors = document.getElementById('console-badge-errors');
+      els.consoleBadgeWarns = document.getElementById('console-badge-warns');
+      els.consoleFilters = document.querySelectorAll('[data-console-filter]');
+      els.consoleModal = document.getElementById('console-modal');
+      els.consoleModalHeader = document.getElementById('console-modal-header');
+      els.consoleViewBrowser = document.getElementById('console-view-browser');
+      els.consoleViewServer = document.getElementById('console-view-server');
+      els.consoleServerBar = document.getElementById('console-server-bar');
+      els.consoleServerPill = document.getElementById('console-server-pill');
+      els.consoleServerWhere = document.getElementById('console-server-where');
+      els.consoleServerList = document.getElementById('console-server-list');
+      els.consoleSearch = document.getElementById('console-search');
+      els.consoleResize = document.getElementById('console-resize');
+      els.btnConsoleToggle = document.getElementById('btn-console-toggle');
+      els.btnConsoleClose = document.getElementById('btn-console-close');
+      els.btnConsoleAutoscroll = document.getElementById('btn-console-autoscroll');
+      els.btnServerStop = document.getElementById('btn-server-stop');
+      els.btnServerStart = document.getElementById('btn-server-start');
+      els.btnServerRestart = document.getElementById('btn-server-restart');
+      els.previewServerStopped = document.getElementById('preview-server-stopped');
+      els.btnPreviewStart = document.getElementById('btn-preview-start');
+      els.btnConsoleClear = document.getElementById('btn-console-clear');
+      els.btnConsoleCopy = document.getElementById('btn-console-copy');
+      els.btnConsoleFixAll = document.getElementById('btn-console-fix-all');
 
       els.aiInstruction = document.getElementById('ai-instruction');
       els.aiScope = document.getElementById('ai-scope');
@@ -9457,6 +9719,7 @@ if (typeof document !== 'undefined') {
         previewId: null, url: null, previewStatus: 'launching', message: '', error: null,
         logsTail: [], dirty: false, dirtyPaths: new Set(), launchToken: 0, warning: null,
         writeTimer: null, relaunchTimer: null,
+        serverLines: [], serverSeq: 0, serverStatus: 'installing', serverBusy: false, // Consola > Servidor
       };
     }
 
@@ -9485,7 +9748,11 @@ if (typeof document !== 'undefined') {
       const frame = els.previewProjectFrame;
       if (!frame) return;
       if (pj && pj.previewStatus === 'ready' && pj.url) {
-        if (frame.getAttribute('src') !== pj.url) frame.setAttribute('src', pj.url);
+        if (frame.getAttribute('src') !== pj.url) {
+          consoleClear(true);
+          state.consoleLog.awaiting = true;
+          frame.setAttribute('src', pj.url);
+        }
       } else if (frame.getAttribute('src') && frame.getAttribute('src') !== 'about:blank') {
         frame.setAttribute('src', 'about:blank');
       }
@@ -9554,6 +9821,7 @@ if (typeof document !== 'undefined') {
       if (els.btnInspectToggle) els.btnInspectToggle.disabled = false;
       if (els.btnSaveVersion) els.btnSaveVersion.disabled = false;
       renderStudioDraftNotice(false);
+      consoleClear(false);
       setStudioView('preview');
     }
 
@@ -9571,6 +9839,7 @@ if (typeof document !== 'undefined') {
         pj.message = view.status === 'stopped' ? 'El servidor de la vista previa se cerró.' : (view.message || `Error de compilación: ${pj.error || 'sin detalle'}`);
       } else {
         pj.previewStatus = 'launching';
+        pj.serverStatus = view.status === 'starting' ? 'starting' : 'installing';
         pj.message = view.status === 'installing'
           ? 'Instalando dependencias… (la primera vez puede tardar unos minutos)'
           : (pj.technology === 'nextjs' ? 'Levantando Next…' : 'Levantando Vite…');
@@ -9596,6 +9865,8 @@ if (typeof document !== 'undefined') {
       pj.warning = null;
       pj.logsTail = [];
       pj.dirtyPaths.clear();
+      pj.serverStatus = 'installing';
+      if (pj.serverLines.length) pushServerSeparator(pj);
       pj.message = 'Enviando el proyecto al servidor de vista previa…';
       renderEjecutor();
       try {
@@ -9611,21 +9882,8 @@ if (typeof document !== 'undefined') {
           err.rejected = res.status === 400;
           throw err;
         }
-        pj.previewId = data.previewId;
-        let view = data;
-        while (view.status === 'installing' || view.status === 'starting') {
-          applyProjectView(exec, view);
-          // eslint-disable-next-line no-await-in-loop
-          await projectSleep(1000);
-          if (stale()) return;
-          // eslint-disable-next-line no-await-in-loop
-          const r = await fetch(`${PROJECT_API}/${encodeURIComponent(pj.previewId)}/status`);
-          if (r.status === 404) throw new Error('La vista previa se cerró antes de terminar de levantar.');
-          // eslint-disable-next-line no-await-in-loop
-          view = await r.json();
-        }
-        if (stale()) return;
-        applyProjectView(exec, view);
+        adoptProjectPreviewId(pj, data.previewId);
+        if (!(await followProjectView(exec, data, stale))) return;
       } catch (e) {
         if (stale()) return;
         pj.previewStatus = 'error';
@@ -10031,7 +10289,7 @@ if (typeof document !== 'undefined') {
       if (state.previewDebounceTimer) clearTimeout(state.previewDebounceTimer);
       state.previewDebounceTimer = setTimeout(() => {
         const html = state.editor ? state.editor.getValue() : '';
-        sendHtmlToPreview(injectInspector(html));
+        renderPreviewHtml(html);
       }, 400);
     }
 
@@ -10141,7 +10399,8 @@ if (typeof document !== 'undefined') {
       if (state.execution) state.execution.html = value;
       state.versions = (o.versions && o.versions.length) ? o.versions.slice() : [{ id: makeVersionId(), source: o.initialSource || 'generado', html, date: new Date().toISOString() }];
       renderVersions();
-      sendHtmlToPreview(injectInspector(value));
+      consoleClear(false);
+      renderPreviewHtml(value);
       renderStudioDraftNotice(restored);
       setStudioView('preview'); // Feature 1: tras ejecutar, se ve la preview; el código queda oculto hasta pedirlo
     }
@@ -10192,6 +10451,12 @@ if (typeof document !== 'undefined') {
     }
 
     function renderEjecutor() {
+      renderEjecutorMain();
+      syncConsoleChrome();
+      renderServerBar();
+    }
+
+    function renderEjecutorMain() {
       updateProviderSummary();
       renderSeedHint();
       renderProjectLog();
@@ -10224,7 +10489,7 @@ if (typeof document !== 'undefined') {
         const pj = exec.project;
         if (pj) {
           const isErr = pj.previewStatus === 'error';
-          const base = isErr ? pj.message
+          const base = (isErr || pj.previewStatus === 'stopped') ? pj.message
             : (pj.previewStatus === 'launching' ? pj.message
               : `Proyecto ${TECHNOLOGIES[pj.technology] ? TECHNOLOGIES[pj.technology].label : pj.technology} generado con ${exec.label}. Vista previa en el servidor de desarrollo local.`);
           els.ejecutorStatus.textContent = base + (pj.warning ? ` ${pj.warning}` : '') + formatOpencodeAttempts(exec.attempts)
@@ -10235,6 +10500,12 @@ if (typeof document !== 'undefined') {
         } else {
           els.ejecutorStatus.textContent = `Landing generada con ${exec.label}.` + formatOpencodeAttempts(exec.attempts) + formatAssetsUsage(exec);
           els.ejecutorStatus.classList.remove('status--loading', 'status--error');
+        }
+        const consoleHint = consoleHintText();
+        state.consoleLog.lastHint = consoleHint;
+        if (consoleHint) {
+          els.ejecutorStatus.textContent += ' ' + consoleHint;
+          els.ejecutorStatus.classList.add('status--error');
         }
         els.btnSaveBank.disabled = false;
         els.btnCancelExecute.hidden = true;
@@ -10927,6 +11198,837 @@ if (typeof document !== 'undefined') {
       els.ejecutorStatus.classList.remove('status--error');
     }
 
+    /* ---------- Consola del Estudio ----------
+     * Muestra lo que tira la página generada: console.*, errores de ventana
+     * (incl. recursos que no cargan) y promesas rechazadas. El script de
+     * captura (console-capture.js) se inyecta SOLO en la copia que va a la
+     * preview; los mensajes llegan por postMessage ('lpa:console') y se
+     * validan acá (HTML único: event.source === #preview-frame y `run` actual;
+     * dev server: además event.origin === origen de la preview). */
+
+    const CONSOLE_MAX_ENTRIES = 500;
+
+    // HTML único → preview con inspector + captura de la consola. La captura
+    // queda como primer elemento de <head> (misma línea: no corre líneas).
+    function renderPreviewHtml(html) {
+      const c = state.consoleLog;
+      c.runSeq += 1;
+      c.run = `r${c.runSeq}${Date.now().toString(36)}`;
+      c.awaiting = true;
+      c.inst = null;
+      consoleClear(true);
+      const inj = injectConsoleCaptureInfo(injectInspector(html), buildConsoleScript({ mode: 'srcdoc', run: c.run }));
+      c.inject = inj.info;
+      sendHtmlToPreview(inj.html);
+    }
+
+    // Limpia (nueva ejecución). Con separador si había mensajes; sin él,
+    // cuando se abre otro proyecto/ejecución o el usuario toca "Limpiar".
+    function consoleClear(withSeparator) {
+      const c = state.consoleLog;
+      const had = c.entries.some((e) => e.level !== 'separator');
+      c.entries = (withSeparator && had) ? [{ id: ++c.seq, level: 'separator', message: `— nueva ejecución ${formatConsoleClock(Date.now())} —`, ts: Date.now() }] : [];
+      c.empty = false;
+      refreshConsoleUi();
+    }
+
+    function consoleErrorEntries() {
+      return state.consoleLog.entries.filter((e) => e.level === 'error');
+    }
+
+    function consoleHintText() {
+      const n = consoleErrorEntries().length;
+      if (!n || !state.consoleLog.empty) return '';
+      return `La página tiró ${n} ${n === 1 ? 'error' : 'errores'}: abrí la Consola.`;
+    }
+
+    function onConsoleMessage(data, kind) {
+      const c = state.consoleLog;
+      if (!data || data.type !== 'lpa:console') return;
+      if (kind === 'html' && data.run !== c.run) return; // mensaje de una ejecución anterior
+      const inst = typeof data.inst === 'string' ? data.inst.slice(0, 40) : null;
+      if (inst && c.inst !== inst) {
+        if (c.inst !== null && !c.awaiting) consoleClear(true); // la página se recargó sola
+        c.inst = inst;
+        c.awaiting = false;
+        c.empty = false;
+      }
+      const e = normalizeConsoleEntry(data);
+      if (!e) return;
+      if (e.level === 'heartbeat') {
+        if (e.message === 'load' || e.message === 'settled') c.empty = e.empty;
+        refreshConsoleUi();
+        return;
+      }
+      if (kind === 'html' && e.line) {
+        const m = mapConsoleLocation(c.inject, e.line, e.col);
+        e.line = m.line;
+        e.col = m.col;
+      }
+      e.id = ++c.seq;
+      c.entries.push(e);
+      if (c.entries.length > CONSOLE_MAX_ENTRIES) c.entries.splice(0, c.entries.length - CONSOLE_MAX_ENTRIES);
+      refreshConsoleUi();
+      if (e.level === 'error') pulseConsoleToggle();
+    }
+
+    function setConsoleFilter(filter) {
+      state.consoleLog.filter = ['all', 'error', 'warn', 'log'].indexOf(filter) !== -1 ? filter : 'all';
+      els.consoleFilters.forEach((b) => {
+        const on = b.dataset.consoleFilter === state.consoleLog.filter;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-pressed', String(on));
+      });
+      renderConsole();
+      renderServerLog();
+    }
+
+    function consoleMatchesFilter(e, filter) {
+      if (e.level === 'separator' || filter === 'all') return true;
+      if (filter === 'log') return e.level !== 'error' && e.level !== 'warn';
+      return e.level === filter;
+    }
+
+    // ¿A qué código apunta el mensaje? { path|null, line, col, label } o null.
+    function consoleResolveLocation(e) {
+      if (!e || !e.line) return null;
+      const pj = state.execution && state.execution.project;
+      if (pj) {
+        const p = resolveConsoleSource(e.source, pj.order);
+        return p ? { path: p, line: e.line, col: e.col, label: `${p}:${e.line}${e.col ? ':' + e.col : ''}` } : null;
+      }
+      if (e.source && !/^(about:|blob:|data:)/i.test(e.source)) return null; // script externo: no es nuestro código
+      return { path: null, line: e.line, col: e.col, label: `HTML:${e.line}${e.col ? ':' + e.col : ''}` };
+    }
+
+    function consoleLocationLabel(e) {
+      const loc = consoleResolveLocation(e);
+      if (loc) return loc.label;
+      if (e.source) {
+        const tail = e.source.length > 70 ? '…' + e.source.slice(-67) : e.source;
+        return e.line ? `${tail}:${e.line}${e.col ? ':' + e.col : ''}` : tail;
+      }
+      return '';
+    }
+
+    function revealConsoleLocation(loc) {
+      if (!loc || !state.editor) return;
+      const pj = state.execution && state.execution.project;
+      if (pj && loc.path) {
+        if (loc.path !== pj.current) {
+          selectProjectFile(loc.path);
+          if (els.studioFileSelect) els.studioFileSelect.value = loc.path;
+        }
+      }
+      setStudioView('code'); // la consola es un modal flotante: sigue abierta mientras se mira el código
+      refreshEditor();
+      const src = state.editor.getValue();
+      const r = lineRangeOf(src, loc.line);
+      state.editor.scrollToLine(r.line);
+      if (typeof state.editor.selectRange === 'function') state.editor.selectRange(r.start, r.end);
+    }
+
+    function consoleCodeFor(e) {
+      const loc = consoleResolveLocation(e);
+      const pj = state.execution && state.execution.project;
+      let src = '';
+      let file = '';
+      if (pj) {
+        file = loc ? loc.path : '';
+        src = file ? pj.files[file] : '';
+      } else if (loc && state.editor) {
+        file = 'index.html';
+        src = state.editor.getValue();
+      }
+      return { loc, file, excerpt: loc ? extractCodeExcerpt(src, loc.line, 8) : '' };
+    }
+
+    // "Arreglar con IA": arma la instrucción (mensaje + ubicación + ±8 líneas)
+    // y dispara el flujo de edición existente (diff con Aceptar / Descartar).
+    function fixConsoleEntries(list) {
+      const seen = new Set();
+      const errors = (list || []).filter((e) => {
+        const k = `${e.message}|${e.source}|${e.line}`;
+        if (e.level !== 'error' || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      }).slice(0, 10);
+      if (!errors.length) return null;
+      if (!state.editor || !state.execution || state.execution.status !== 'done') {
+        els.aiEditStatus.textContent = 'Todavía no hay código para arreglar.';
+        els.aiEditStatus.classList.add('status--error');
+        return null;
+      }
+      if (els.btnAiEdit.disabled) return null; // ya hay un cambio en curso
+      const items = errors.map((e) => {
+        const ctx = consoleCodeFor(e);
+        return { entry: e, where: ctx.loc ? ctx.loc.label : consoleLocationLabel(e), file: ctx.file, line: ctx.loc ? ctx.loc.line : 0, excerpt: ctx.excerpt };
+      });
+      els.aiInstruction.value = buildConsoleFixInstruction(items);
+      els.aiScope.value = 'document';
+      if (els.aiEditDiff) els.aiEditDiff.hidden = true;
+      const panel = document.getElementById('ai-edit-panel');
+      if (panel && typeof panel.scrollIntoView === 'function') { try { panel.scrollIntoView({ block: 'nearest' }); } catch (err) { /* no-op */ } }
+      return runAiEdit('console');
+    }
+
+    async function onConsoleCopy() {
+      const m = state.consoleModal;
+      const text = consoleVisibleEntries(consoleViewEntries()).map((e) => formatConsoleEntryText(e, e.level === 'separator' ? '' : consoleLocationLabel(e))).join('\n');
+      if (!text) { els.consoleSummary.textContent = 'No hay nada para copiar.'; return; }
+      try {
+        await navigator.clipboard.writeText(text);
+        els.consoleSummary.textContent = m.view === 'server' ? 'Salida del servidor copiada al portapapeles.' : 'Consola copiada al portapapeles.';
+      } catch (err) {
+        els.consoleSummary.textContent = 'No se pudo copiar la consola.';
+      }
+    }
+
+    function scheduleConsoleRender() {
+      const c = state.consoleLog;
+      if (c.renderTimer) return;
+      c.renderTimer = setTimeout(() => { c.renderTimer = null; renderConsole(); }, 40);
+    }
+
+    function updateConsoleSummary() {
+      if (!els.consoleSummary) return;
+      const m = state.consoleModal;
+      const counts = consoleCounts(consoleViewEntries());
+      const total = counts.error + counts.warn + counts.log;
+      const pre = m.view === 'server' ? 'Servidor: ' : '';
+      els.consoleSummary.textContent = total === 0 ? (m.view === 'server' ? 'Sin salida del servidor.' : 'Sin mensajes.')
+        : `${pre}${counts.error} error${counts.error === 1 ? '' : 'es'}, ${counts.warn} advertencia${counts.warn === 1 ? '' : 's'}, ${counts.log} log${counts.log === 1 ? '' : 's'}.`;
+      if (els.btnConsoleFixAll) els.btnConsoleFixAll.hidden = counts.error === 0;
+    }
+
+    // Contadores (badges del botón + resumen accesible) al instante; la lista
+    // con un pequeño retardo para agrupar ráfagas de mensajes.
+    function refreshConsoleUi() {
+      const c = state.consoleLog;
+      const counts = consoleCounts(c.entries);
+      if (els.consoleBadgeErrors) {
+        els.consoleBadgeErrors.hidden = counts.error === 0;
+        els.consoleBadgeErrors.textContent = String(counts.error);
+        els.consoleBadgeErrors.title = `${counts.error} error${counts.error === 1 ? '' : 'es'}`;
+      }
+      if (els.consoleBadgeWarns) {
+        els.consoleBadgeWarns.hidden = counts.warn === 0;
+        els.consoleBadgeWarns.textContent = String(counts.warn);
+        els.consoleBadgeWarns.title = `${counts.warn} advertencia${counts.warn === 1 ? '' : 's'}`;
+      }
+      if (els.btnConsoleToggle) {
+        els.btnConsoleToggle.setAttribute('aria-label', `Consola: ${counts.error} error${counts.error === 1 ? '' : 'es'}, ${counts.warn} advertencia${counts.warn === 1 ? '' : 's'}`);
+      }
+      updateConsoleSummary();
+      scheduleConsoleRender();
+      const hint = consoleHintText();
+      if (hint !== c.lastHint && state.execution && state.execution.status === 'done') renderEjecutor();
+    }
+
+    /* ---- lista de mensajes (terminal) ---- */
+
+    function consoleProject() {
+      return (state.execution && state.execution.project) || null;
+    }
+
+    // Mensajes de la vista activa del modal.
+    function consoleViewEntries() {
+      const pj = consoleProject();
+      return (state.consoleModal.view === 'server' && pj) ? pj.serverLines : state.consoleLog.entries;
+    }
+
+    function consoleVisibleEntries(entries) {
+      const c = state.consoleLog;
+      const q = state.consoleModal.search;
+      return entries.filter((e) => consoleMatchesFilter(e, c.filter) && consoleMatchesSearch(e, q));
+    }
+
+    function buildConsoleRow(g, isServer) {
+      const ICONS = { error: '✖', warn: '▲', info: 'ℹ', log: '›', debug: '›' };
+      const LEVEL_LABELS = { error: 'Error', warn: 'Advertencia', info: 'Info', log: 'Log', debug: 'Debug' };
+      const e = g.entry;
+      const li = document.createElement('li');
+      if (e.level === 'separator') {
+        li.className = 'console__sep';
+        li.setAttribute('role', 'separator');
+        li.textContent = e.message;
+        return li;
+      }
+      li.className = `console__entry console__entry--${e.level}${isServer ? ' console__entry--server' : ''}`;
+      li.dataset.level = e.level;
+      if (g.count > 1) li.dataset.count = String(g.count);
+      const time = document.createElement('time');
+      time.className = 'console__time';
+      time.textContent = formatConsoleClock(g.last.ts);
+      time.dateTime = new Date(g.last.ts).toISOString();
+      const icon = document.createElement('span');
+      icon.className = 'console__icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = ICONS[e.level] || '›';
+      const body = document.createElement('div');
+      body.className = 'console__body';
+      const sr = document.createElement('span');
+      sr.className = 'sr-only';
+      sr.textContent = `${LEVEL_LABELS[e.level] || e.level}: `;
+      const msg = document.createElement('span');
+      msg.className = 'console__msg';
+      msg.textContent = e.message;
+      body.appendChild(sr);
+      body.appendChild(msg);
+      if (g.count > 1) {
+        const cnt = document.createElement('span');
+        cnt.className = 'console__count';
+        cnt.textContent = `×${g.count}`;
+        cnt.title = `Se repitió ${g.count} veces`;
+        cnt.setAttribute('aria-label', `repetido ${g.count} veces`);
+        body.appendChild(cnt);
+      }
+      const loc = consoleResolveLocation(e);
+      const label = consoleLocationLabel(e);
+      const fixable = e.level === 'error';
+      if (label || fixable) {
+        const meta = document.createElement('div');
+        meta.className = 'console__meta';
+        if (label) {
+          const where = document.createElement(loc ? 'button' : 'span');
+          where.className = 'console__loc' + (loc ? ' btn--link' : '');
+          where.textContent = label;
+          if (loc) {
+            where.type = 'button';
+            where.title = 'Ir a esta línea en el código';
+            where.addEventListener('click', () => revealConsoleLocation(loc));
+          }
+          meta.appendChild(where);
+        }
+        if (fixable) {
+          const fix = document.createElement('button');
+          fix.type = 'button';
+          fix.className = 'console__fix';
+          fix.textContent = 'Arreglar con IA';
+          fix.addEventListener('click', () => fixConsoleEntries([e]));
+          meta.appendChild(fix);
+        }
+        body.appendChild(meta);
+      }
+      if (e.stack) {
+        const det = document.createElement('details');
+        det.className = 'console__stack';
+        const sum = document.createElement('summary');
+        sum.textContent = 'Stack';
+        const pre = document.createElement('pre');
+        pre.textContent = e.stack;
+        det.appendChild(sum);
+        det.appendChild(pre);
+        body.appendChild(det);
+      }
+      li.appendChild(time);
+      li.appendChild(icon);
+      li.appendChild(body);
+      return li;
+    }
+
+    function fillConsoleList(list, entries, isServer) {
+      const m = state.consoleModal;
+      const prevTop = list.scrollTop;
+      list.textContent = '';
+      const visible = consoleVisibleEntries(entries);
+      if (!visible.length) {
+        const li = document.createElement('li');
+        li.className = 'console__empty';
+        li.textContent = entries.length ? 'Ningún mensaje con este filtro.'
+          : (isServer ? 'Sin salida del servidor todavía. Acá ves lo que imprime Vite / Next al compilar.' : 'Sin mensajes. Acá aparecen los errores y logs de la página generada.');
+        list.appendChild(li);
+        return;
+      }
+      groupConsoleEntries(visible).forEach((g) => list.appendChild(buildConsoleRow(g, isServer)));
+      list.scrollTop = m.autoScroll ? list.scrollHeight : prevTop;
+    }
+
+    function renderConsole() {
+      const c = state.consoleLog;
+      const m = state.consoleModal;
+      if (c.renderTimer) { clearTimeout(c.renderTimer); c.renderTimer = null; }
+      if (!els.consoleList || !m.open || m.view !== 'browser') return;
+      fillConsoleList(els.consoleList, c.entries, false);
+    }
+
+    function renderServerLog() {
+      const m = state.consoleModal;
+      const pj = consoleProject();
+      if (!els.consoleServerList || !m.open || m.view !== 'server' || !pj) return;
+      fillConsoleList(els.consoleServerList, pj.serverLines, true);
+      updateConsoleSummary();
+    }
+
+    /* ---- modal: abrir / cerrar / vistas ---- */
+
+    const CONSOLE_MODAL_KEY = 'lpa_console_modal_v1';
+    const CONSOLE_MODAL_MIN_W = 320;
+    const CONSOLE_MODAL_MIN_H = 200;
+    const SERVER_LOG_MAX = 1000;
+
+    function consoleIsMobile() {
+      return window.innerWidth <= 640;
+    }
+
+    function clampConsoleRect(r) {
+      const vw = Math.max(window.innerWidth || 0, 320);
+      const vh = Math.max(window.innerHeight || 0, 240);
+      const w = Math.round(Math.min(Math.max(Number(r.w) || 0, CONSOLE_MODAL_MIN_W), vw));
+      const h = Math.round(Math.min(Math.max(Number(r.h) || 0, CONSOLE_MODAL_MIN_H), vh));
+      const x = Math.round(Math.min(Math.max(Number(r.x) || 0, 0), vw - w));
+      const y = Math.round(Math.min(Math.max(Number(r.y) || 0, 0), vh - h));
+      return { x, y, w, h };
+    }
+
+    function defaultConsoleRect() {
+      const vw = Math.max(window.innerWidth || 0, 320);
+      const vh = Math.max(window.innerHeight || 0, 240);
+      const w = Math.min(560, vw - 32);
+      const h = Math.min(380, Math.round(vh * 0.55));
+      return clampConsoleRect({ x: vw - w - 16, y: vh - h - 16, w, h });
+    }
+
+    function loadConsoleRect() {
+      const raw = safeGetItem(CONSOLE_MODAL_KEY);
+      if (raw) {
+        try {
+          const r = JSON.parse(raw);
+          if (r && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(r[k]))) return clampConsoleRect(r);
+        } catch (e) { /* cae al valor por defecto */ }
+      }
+      return defaultConsoleRect();
+    }
+
+    function saveConsoleRect() {
+      const r = state.consoleModal.rect;
+      if (r) safeSetItem(CONSOLE_MODAL_KEY, JSON.stringify(r));
+    }
+
+    function applyConsoleRect() {
+      const el = els.consoleModal;
+      const m = state.consoleModal;
+      if (!el) return;
+      if (consoleIsMobile()) { // hoja inferior a todo el ancho (ver CSS)
+        ['left', 'top', 'width', 'height'].forEach((k) => { el.style[k] = ''; });
+        el.classList.add('is-sheet');
+        return;
+      }
+      el.classList.remove('is-sheet');
+      if (!m.rect) m.rect = loadConsoleRect();
+      m.rect = clampConsoleRect(m.rect);
+      el.style.left = m.rect.x + 'px';
+      el.style.top = m.rect.y + 'px';
+      el.style.width = m.rect.w + 'px';
+      el.style.height = m.rect.h + 'px';
+    }
+
+    function consoleAvailable() {
+      const exec = state.execution;
+      return !!exec && (exec.project ? true : exec.status === 'done');
+    }
+
+    function openConsoleModal() {
+      const m = state.consoleModal;
+      if (!els.consoleModal || !consoleAvailable()) return;
+      m.open = true;
+      m.lastFocus = document.activeElement;
+      els.consoleModal.hidden = false;
+      if (els.btnConsoleToggle) {
+        els.btnConsoleToggle.setAttribute('aria-expanded', 'true');
+        els.btnConsoleToggle.classList.remove('is-pulse');
+      }
+      applyConsoleRect();
+      applyConsoleView();
+      try { els.consoleModal.focus({ preventScroll: true }); } catch (e) { /* no-op */ }
+    }
+
+    function closeConsoleModal(restoreFocus) {
+      const m = state.consoleModal;
+      if (!els.consoleModal) return;
+      m.open = false;
+      els.consoleModal.hidden = true;
+      stopServerPolling();
+      if (els.btnConsoleToggle) els.btnConsoleToggle.setAttribute('aria-expanded', 'false');
+      if (restoreFocus !== false && els.btnConsoleToggle && !els.btnConsoleToggle.hidden) {
+        try { els.btnConsoleToggle.focus({ preventScroll: true }); } catch (e) { /* no-op */ }
+      }
+    }
+
+    function toggleConsoleModal() {
+      if (state.consoleModal.open) closeConsoleModal(true); else openConsoleModal();
+    }
+
+    function pulseConsoleToggle() {
+      const m = state.consoleModal;
+      if (m.open || !els.btnConsoleToggle || els.btnConsoleToggle.hidden) return;
+      els.btnConsoleToggle.classList.remove('is-pulse');
+      void els.btnConsoleToggle.offsetWidth; // reinicia la animación (se muestra una sola vez por error nuevo)
+      els.btnConsoleToggle.classList.add('is-pulse');
+      if (m.pulseTimer) clearTimeout(m.pulseTimer);
+      m.pulseTimer = setTimeout(() => { m.pulseTimer = null; if (els.btnConsoleToggle) els.btnConsoleToggle.classList.remove('is-pulse'); }, 1400);
+    }
+
+    // Botón flotante (sólo con una preview) y vistas disponibles.
+    function syncConsoleChrome() {
+      const m = state.consoleModal;
+      const avail = consoleAvailable();
+      if (els.btnConsoleToggle) els.btnConsoleToggle.hidden = !avail;
+      if (!avail && m.open) closeConsoleModal(false);
+      const pj = consoleProject();
+      if (els.consoleViewServer) els.consoleViewServer.hidden = !pj;
+      if (!pj && m.view === 'server') m.view = 'browser';
+      if (els.previewServerStopped) els.previewServerStopped.hidden = !(pj && pj.previewStatus === 'stopped');
+      if (m.open) applyConsoleView();
+    }
+
+    function setConsoleView(view) {
+      const m = state.consoleModal;
+      m.view = (view === 'server' && consoleProject()) ? 'server' : 'browser';
+      applyConsoleView();
+    }
+
+    function applyConsoleView() {
+      const m = state.consoleModal;
+      const pj = consoleProject();
+      if (m.view === 'server' && !pj) m.view = 'browser';
+      const isServer = m.view === 'server';
+      [els.consoleViewBrowser, els.consoleViewServer].forEach((b) => {
+        if (!b) return;
+        const on = b.dataset.consoleView === m.view;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-selected', String(on));
+        b.tabIndex = on ? 0 : -1;
+      });
+      if (els.consoleList) els.consoleList.hidden = isServer;
+      if (els.consoleServerList) els.consoleServerList.hidden = !isServer;
+      renderServerBar();
+      updateConsoleSummary();
+      renderConsole();
+      renderServerLog();
+      syncServerPolling();
+    }
+
+    function onConsoleViewKeydown(event) {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const tabs = [els.consoleViewBrowser, els.consoleViewServer].filter((b) => b && !b.hidden);
+      if (tabs.length < 2) return;
+      event.preventDefault();
+      const next = tabs[(tabs.indexOf(event.currentTarget) + 1) % tabs.length];
+      next.focus();
+      setConsoleView(next.dataset.consoleView);
+    }
+
+    function setConsoleSearch(value) {
+      state.consoleModal.search = String(value || '').slice(0, 200);
+      renderConsole();
+      renderServerLog();
+    }
+
+    function setConsoleAutoScroll(on) {
+      const m = state.consoleModal;
+      m.autoScroll = !!on;
+      if (els.btnConsoleAutoscroll) els.btnConsoleAutoscroll.setAttribute('aria-pressed', String(m.autoScroll));
+      if (m.autoScroll) { renderConsole(); renderServerLog(); }
+    }
+
+    function onConsoleClear() {
+      const pj = consoleProject();
+      if (state.consoleModal.view === 'server' && pj) {
+        pj.serverLines = []; // serverSeq no se toca: lo limpiado no vuelve en el próximo sondeo
+        renderServerLog();
+        updateConsoleSummary();
+        return;
+      }
+      consoleClear(false);
+    }
+
+    function onConsoleFixAll() {
+      fixConsoleEntries(consoleViewEntries().filter((e) => e.level === 'error'));
+    }
+
+    /* ---- arrastrar y redimensionar (pointer events) ---- */
+
+    function startConsoleDrag(event, mode) {
+      const m = state.consoleModal;
+      if (!els.consoleModal || consoleIsMobile() || (event.button != null && event.button > 0)) return;
+      if (mode === 'move' && event.target && event.target.closest && event.target.closest('button, input, a')) return;
+      event.preventDefault();
+      if (!m.rect) m.rect = loadConsoleRect();
+      const start = { px: event.clientX, py: event.clientY, r: Object.assign({}, m.rect) };
+      const handle = mode === 'move' ? els.consoleModalHeader : els.consoleResize;
+      try { if (handle.setPointerCapture && event.pointerId != null) handle.setPointerCapture(event.pointerId); } catch (e) { /* no-op */ }
+      const onMove = (ev) => {
+        const dx = ev.clientX - start.px;
+        const dy = ev.clientY - start.py;
+        m.rect = mode === 'move'
+          ? clampConsoleRect({ x: start.r.x + dx, y: start.r.y + dy, w: start.r.w, h: start.r.h })
+          : clampConsoleRect({ x: start.r.x, y: start.r.y, w: Math.min(start.r.w + dx, window.innerWidth - start.r.x), h: Math.min(start.r.h + dy, window.innerHeight - start.r.y) });
+        applyConsoleRect();
+      };
+      const onUp = () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onUp);
+        saveConsoleRect();
+      };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onUp);
+    }
+
+    function onConsoleResizeKeydown(event) {
+      const step = event.shiftKey ? 60 : 20;
+      const m = state.consoleModal;
+      if (consoleIsMobile() || !m.rect) return;
+      const d = { ArrowRight: [step, 0], ArrowLeft: [-step, 0], ArrowDown: [0, step], ArrowUp: [0, -step] }[event.key];
+      if (!d) return;
+      event.preventDefault();
+      m.rect = clampConsoleRect({ x: m.rect.x, y: m.rect.y, w: m.rect.w + d[0], h: m.rect.h + d[1] });
+      applyConsoleRect();
+      saveConsoleRect();
+    }
+
+    function onConsoleModalKeydown(event) {
+      if (event.key !== 'Escape' || !state.consoleModal.open) return;
+      const t = event.target;
+      if (els.consoleModal.contains(t) || t === els.btnConsoleToggle) {
+        event.preventDefault();
+        closeConsoleModal(true);
+      }
+    }
+
+    /* ---- vista "Servidor": salida del dev server + controles ---- */
+
+    function projectServerState(pj) {
+      if (pj.previewStatus === 'ready') return 'ready';
+      if (pj.previewStatus === 'stopped') return 'stopped';
+      if (pj.previewStatus === 'error') return 'error';
+      return pj.serverStatus === 'starting' ? 'starting' : 'installing';
+    }
+
+    const SERVER_STATE_LABELS = { stopped: 'Detenido', installing: 'Instalando', starting: 'Compilando', ready: 'Listo', error: 'Error' };
+
+    function renderServerBar() {
+      const m = state.consoleModal;
+      const pj = consoleProject();
+      const show = !!pj && m.view === 'server';
+      if (els.consoleServerBar) els.consoleServerBar.hidden = !show;
+      if (!show) return;
+      const st = projectServerState(pj);
+      els.consoleServerPill.textContent = SERVER_STATE_LABELS[st];
+      els.consoleServerPill.className = `cmodal__pill cmodal__pill--${st}`;
+      let where = '';
+      if (st === 'ready' && pj.url) {
+        let port = '';
+        try { port = new URL(pj.url).port; } catch (e) { /* sin puerto */ }
+        where = port ? `puerto ${port} · ${pj.url}` : pj.url;
+      } else if (st === 'installing' || st === 'starting') where = pj.message || '';
+      else if (st === 'error') where = pj.error ? String(pj.error).slice(0, 120) : '';
+      els.consoleServerWhere.textContent = where;
+      els.consoleServerWhere.title = where;
+      const busy = !!pj.serverBusy;
+      els.btnServerStop.disabled = busy || !(st === 'installing' || st === 'starting' || st === 'ready');
+      els.btnServerStart.disabled = busy || !(st === 'stopped' || st === 'error');
+      els.btnServerRestart.disabled = busy;
+      if (els.btnPreviewStart) els.btnPreviewStart.disabled = busy;
+    }
+
+    function pushServerSeparator(pj) {
+      pj.serverLines.push({ id: ++state.consoleLog.seq, level: 'separator', message: `— nueva ejecución ${formatConsoleClock(Date.now())} —`, ts: Date.now() });
+      if (pj.serverLines.length > SERVER_LOG_MAX) pj.serverLines.splice(0, pj.serverLines.length - SERVER_LOG_MAX);
+    }
+
+    // Una línea cruda del servidor → mensaje de consola. Si menciona un archivo
+    // del proyecto (src/App.jsx:12:3) queda con ubicación clickeable y, si es
+    // un error, arreglable con IA.
+    function serverLineToEntry(pj, l) {
+      const text = stripConsoleAnsi(l.text).slice(0, 500);
+      const stream = l.stream === 'stdout' || l.stream === 'stderr' ? l.stream : 'system';
+      const e = { id: ++state.consoleLog.seq, seq: l.seq, level: classifyServerLine(text, stream), message: text, source: '', line: 0, col: 0, stack: '', ts: Number.isFinite(l.ts) ? l.ts : Date.now(), stream };
+      const m = text.match(/([^\s()'"<>:]+\.(?:jsx?|tsx?|mjs|vue|css|html)):(\d+)(?::(\d+))?/i);
+      if (m && pj) {
+        const p = resolveConsoleSource(m[1], pj.order);
+        if (p) { e.source = p; e.line = Number(m[2]); e.col = m[3] ? Number(m[3]) : 0; }
+      }
+      return e;
+    }
+
+    function ingestServerLogs(pj, data) {
+      if (!data || !Array.isArray(data.lines)) return;
+      data.lines.forEach((l) => {
+        if (!l || !Number.isSafeInteger(l.seq) || l.seq <= pj.serverSeq || typeof l.text !== 'string') return;
+        pj.serverSeq = l.seq;
+        pj.serverLines.push(serverLineToEntry(pj, l));
+      });
+      if (Number.isSafeInteger(data.seq) && data.seq > pj.serverSeq) pj.serverSeq = data.seq;
+      if (pj.serverLines.length > SERVER_LOG_MAX) pj.serverLines.splice(0, pj.serverLines.length - SERVER_LOG_MAX);
+    }
+
+    function serverPollWanted() {
+      const m = state.consoleModal;
+      const pj = consoleProject();
+      return m.open && m.view === 'server' && !!pj && !!pj.previewId;
+    }
+
+    async function pollServerLogs() {
+      const m = state.consoleModal;
+      m.pollTimer = null;
+      if (!serverPollWanted() || m.polling) return;
+      const exec = state.execution;
+      const pj = exec.project;
+      const id = pj.previewId;
+      m.polling = true;
+      try {
+        const r = await fetch(`${PROJECT_API}/${encodeURIComponent(id)}/logs?since=${pj.serverSeq}`);
+        if (pj.previewId === id) {
+          if (r.status === 404) {
+            // El servidor ya no conoce este preview (venció o lo desalojaron).
+            pj.previewId = null;
+            if (pj.previewStatus === 'ready' || pj.previewStatus === 'launching') markProjectStopped(exec, 'La vista previa venció en el servidor. Usá «Iniciar» para volver a levantarla.');
+          } else if (r.ok) {
+            const data = await r.json().catch(() => null);
+            if (data && pj.previewId === id) {
+              ingestServerLogs(pj, data);
+              if (pj.previewStatus === 'launching' && (data.status === 'installing' || data.status === 'starting')) pj.serverStatus = data.status;
+              if (data.status === 'stopped' && pj.previewStatus === 'ready') markProjectStopped(exec, 'El servidor de la vista previa terminó. Usá «Iniciar» para volver a levantarlo.');
+              renderServerLog();
+              renderServerBar();
+            }
+          }
+        }
+      } catch (err) { /* servidor caído: se reintenta en el próximo ciclo */ }
+      m.polling = false;
+      if (serverPollWanted() && !m.pollTimer) m.pollTimer = setTimeout(pollServerLogs, m.pollMs);
+    }
+
+    function syncServerPolling() {
+      const m = state.consoleModal;
+      if (!serverPollWanted()) { stopServerPolling(); return; }
+      if (!m.pollTimer && !m.polling) m.pollTimer = setTimeout(pollServerLogs, 0);
+    }
+
+    function stopServerPolling() {
+      const m = state.consoleModal;
+      if (m.pollTimer) { clearTimeout(m.pollTimer); m.pollTimer = null; }
+    }
+
+    // Preview detenido (a mano, o porque el servidor terminó/venció): el iframe
+    // queda en blanco y aparece el cartel "Servidor detenido — Iniciar".
+    function markProjectStopped(exec, message) {
+      const pj = exec.project;
+      pj.previewStatus = 'stopped';
+      pj.url = null;
+      pj.error = null;
+      pj.warning = null;
+      pj.message = message;
+      if (exec.status === 'loading') exec.status = 'done';
+      renderEjecutor();
+    }
+
+    async function haltProjectServer(exec) {
+      const pj = exec.project;
+      pj.launchToken += 1; // corta el seguimiento de un arranque en curso
+      if (pj.relaunchTimer) { clearTimeout(pj.relaunchTimer); pj.relaunchTimer = null; }
+      if (pj.writeTimer) { clearTimeout(pj.writeTimer); pj.writeTimer = null; }
+      if (pj.previewId) {
+        try {
+          const r = await fetch(`${PROJECT_API}/${encodeURIComponent(pj.previewId)}/halt`, { method: 'POST' });
+          if (r.status === 404) pj.previewId = null;
+        } catch (err) { /* sin servidor: igual se marca detenido */ }
+      }
+      markProjectStopped(exec, 'Servidor detenido. Usá «Iniciar» para volver a levantarlo.');
+    }
+
+    // Iniciar / Reiniciar: el MISMO id (y por lo tanto el mismo Estudio) con los
+    // archivos actuales. Si el servidor ya no lo tiene, crea uno nuevo (id nuevo).
+    async function startProjectServer(exec, action) {
+      const pj = exec.project;
+      if (!pj.previewId) { pj.serverBusy = false; renderServerBar(); await launchProjectPreview(exec); return; }
+      const token = ++pj.launchToken;
+      const stale = () => token !== pj.launchToken || state.execution !== exec;
+      if (pj.relaunchTimer) { clearTimeout(pj.relaunchTimer); pj.relaunchTimer = null; }
+      if (pj.writeTimer) { clearTimeout(pj.writeTimer); pj.writeTimer = null; }
+      pj.dirtyPaths.clear(); // los archivos actuales viajan en el propio pedido
+      pj.previewStatus = 'launching';
+      pj.serverStatus = 'installing';
+      pj.url = null;
+      pj.error = null;
+      pj.warning = null;
+      pj.message = action === 'restart' ? 'Reiniciando el servidor de desarrollo…' : 'Iniciando el servidor de desarrollo…';
+      pushServerSeparator(pj);
+      renderEjecutor();
+      try {
+        const res = await fetch(`${PROJECT_API}/${encodeURIComponent(pj.previewId)}/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ technology: pj.technology, files: pj.files }),
+        });
+        const data = await res.json().catch(() => ({}));
+        pj.serverBusy = false; // el pedido ya volvió: durante el arranque se puede Detener
+        renderServerBar();
+        if (stale()) return;
+        if (!res.ok) {
+          const err = new Error(data.error || `Error del servidor (${res.status}).`);
+          err.rejected = res.status === 400;
+          throw err;
+        }
+        adoptProjectPreviewId(pj, data.previewId);
+        if (!(await followProjectView(exec, data, stale))) return;
+      } catch (e) {
+        pj.serverBusy = false;
+        if (stale()) return;
+        pj.previewStatus = 'error';
+        pj.error = e.message || String(e);
+        pj.message = e.rejected ? `Proyecto rechazado: ${pj.error}` : `Error de compilación: ${pj.error}`;
+      }
+      if (exec.status === 'loading') exec.status = 'done';
+      renderEjecutor();
+      syncServerPolling();
+    }
+
+    async function projectServerAction(action) {
+      const exec = state.execution;
+      const pj = exec && exec.project;
+      if (!pj || pj.serverBusy) return;
+      pj.serverBusy = true;
+      renderServerBar();
+      try {
+        if (action === 'halt') await haltProjectServer(exec);
+        else await startProjectServer(exec, action);
+      } finally {
+        if (action === 'halt') pj.serverBusy = false; // start/restart la liberan apenas responde el servidor
+        renderServerBar();
+        syncServerPolling();
+      }
+    }
+
+    function adoptProjectPreviewId(pj, id) {
+      if (pj.previewId !== id) pj.serverSeq = 0; // otro preview = otro log, con su propia secuencia
+      pj.previewId = id;
+    }
+
+    // Sigue (por /status) un arranque en curso hasta ready / error. Devuelve
+    // false si quedó obsoleto (otra acción lo reemplazó).
+    async function followProjectView(exec, first, stale) {
+      const pj = exec.project;
+      let view = first;
+      while (view.status === 'installing' || view.status === 'starting') {
+        applyProjectView(exec, view);
+        // eslint-disable-next-line no-await-in-loop
+        await projectSleep(1000);
+        if (stale()) return false;
+        // eslint-disable-next-line no-await-in-loop
+        const r = await fetch(`${PROJECT_API}/${encodeURIComponent(pj.previewId)}/status`);
+        if (r.status === 404) throw new Error('La vista previa se cerró antes de terminar de levantar.');
+        // eslint-disable-next-line no-await-in-loop
+        view = await r.json();
+      }
+      if (stale()) return false;
+      applyProjectView(exec, view);
+      return true;
+    }
+
     /* ---------- Click-to-code: mensajes de la preview ---------- */
 
     function onInspectResult(payload) {
@@ -11149,7 +12251,7 @@ if (typeof document !== 'undefined') {
     // arranca oculto (Feature 1): sólo se ve en la tab Código, al activar
     // Dividir, o al inspeccionar un elemento desde la preview (Feature 5).
     function setStudioView(view) {
-      state.studioView = (view === 'code') ? 'code' : 'preview';
+      state.studioView = view === 'code' ? 'code' : 'preview';
       if (els.studio) els.studio.dataset.view = state.studioView;
       els.studioTabsButtons.forEach((b) => {
         const active = b.dataset.studioTab === state.studioView;
@@ -11939,6 +13041,31 @@ if (typeof document !== 'undefined') {
       }
 
       if (els.previewProjectFrame) els.previewProjectFrame.addEventListener('load', syncProjectInspector);
+      els.consoleFilters.forEach((b) => b.addEventListener('click', () => setConsoleFilter(b.dataset.consoleFilter)));
+      if (els.btnConsoleClear) els.btnConsoleClear.addEventListener('click', onConsoleClear);
+      if (els.btnConsoleCopy) els.btnConsoleCopy.addEventListener('click', onConsoleCopy);
+      if (els.btnConsoleFixAll) els.btnConsoleFixAll.addEventListener('click', onConsoleFixAll);
+      if (els.btnConsoleToggle) els.btnConsoleToggle.addEventListener('click', toggleConsoleModal);
+      if (els.btnConsoleClose) els.btnConsoleClose.addEventListener('click', () => closeConsoleModal(true));
+      if (els.consoleSearch) els.consoleSearch.addEventListener('input', () => setConsoleSearch(els.consoleSearch.value));
+      if (els.btnConsoleAutoscroll) els.btnConsoleAutoscroll.addEventListener('click', () => setConsoleAutoScroll(!state.consoleModal.autoScroll));
+      [els.consoleViewBrowser, els.consoleViewServer].forEach((b) => {
+        if (!b) return;
+        b.addEventListener('click', () => setConsoleView(b.dataset.consoleView));
+        b.addEventListener('keydown', onConsoleViewKeydown);
+      });
+      if (els.btnServerStop) els.btnServerStop.addEventListener('click', () => projectServerAction('halt'));
+      if (els.btnServerStart) els.btnServerStart.addEventListener('click', () => projectServerAction('start'));
+      if (els.btnServerRestart) els.btnServerRestart.addEventListener('click', () => projectServerAction('restart'));
+      if (els.btnPreviewStart) els.btnPreviewStart.addEventListener('click', () => projectServerAction('start'));
+      if (els.consoleModalHeader) els.consoleModalHeader.addEventListener('pointerdown', (ev) => startConsoleDrag(ev, 'move'));
+      if (els.consoleResize) {
+        els.consoleResize.addEventListener('pointerdown', (ev) => startConsoleDrag(ev, 'resize'));
+        els.consoleResize.addEventListener('keydown', onConsoleResizeKeydown);
+      }
+      if (els.consoleModal) els.consoleModal.addEventListener('keydown', onConsoleModalKeydown);
+      document.addEventListener('keydown', (ev) => { if (ev.target === els.btnConsoleToggle) onConsoleModalKeydown(ev); });
+      window.addEventListener('resize', () => { if (state.consoleModal.open) applyConsoleRect(); });
       els.btnAiEdit.addEventListener('click', onAiEditClick);
       els.btnCancelAiEdit.addEventListener('click', onCancelAiEdit);
       els.btnAiEditAccept.addEventListener('click', onAiEditAccept);
@@ -11951,6 +13078,10 @@ if (typeof document !== 'undefined') {
         // Previews de proyecto (dev server en otro origen 127.0.0.1:<puerto>):
         // sólo se acepta el mensaje del iframe del proyecto Y de su origen.
         const pjMsg = state.execution && state.execution.project;
+        if (pjMsg && els.previewProjectFrame && isTrustedConsoleMessage(event, els.previewProjectFrame.contentWindow, pjMsg.url)) {
+          onConsoleMessage(event.data, 'project');
+          return;
+        }
         if (pjMsg && els.previewProjectFrame && isTrustedInspectMessage(event, els.previewProjectFrame.contentWindow, pjMsg.url)) {
           if (event.data.type === 'lpa:inspector-ready') syncProjectInspector();
           else onProjectInspectResult(event.data);
@@ -11960,6 +13091,7 @@ if (typeof document !== 'undefined') {
         const data = event.data;
         if (!data || typeof data.type !== 'string' || data.type.indexOf('lpa:') !== 0) return;
         if (data.type === 'lpa:inspect-result') onInspectResult(data.payload);
+        else if (data.type === 'lpa:console' && !pjMsg) onConsoleMessage(data, 'html');
       });
 
       document.addEventListener('keydown', (event) => {
