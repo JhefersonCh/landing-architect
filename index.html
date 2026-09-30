@@ -60,13 +60,6 @@
             <span class="rail__step-label">Ejecutor</span>
           </button>
         </li>
-        <li class="rail__item">
-          <button type="button" class="steps__button rail__step" data-goto="config" id="rail-config">
-            <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></span>
-            <span class="rail__step-index" aria-hidden="true">⚙</span>
-            <span class="rail__step-label">Configuración</span>
-          </button>
-        </li>
       </ol>
     </nav>
 
@@ -74,6 +67,11 @@
       <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7l2-4h14l2 4"/><path d="M3 7h18v13H3z"/><path d="M9 12h6"/></svg></span>
       <span class="rail__step-index">05</span>
       <span class="rail__step-label">Banco</span>
+    </button>
+    <button type="button" class="steps__button rail__step rail__config" data-goto="config" id="rail-config">
+      <span class="rail__step-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></span>
+      <span class="rail__step-index" aria-hidden="true">⚙</span>
+      <span class="rail__step-label">Configuración</span>
     </button>
   </aside>
 
@@ -112,6 +110,7 @@
         <p>Todavía no elegiste un modelo. Es lo primero que conviene hacer: sin proveedor no se puede generar ni ejecutar el prompt.</p>
         <button type="button" class="btn btn--primary btn--small" id="setup-provider-notice-btn">Ir a Configuración</button>
       </div>
+
 
       <form id="form-setup" class="ledger" novalidate>
 
@@ -375,6 +374,7 @@
             <div class="pregen-actions">
               <button type="button" id="btn-pregen-image" class="btn btn--secondary">Generar imagen</button>
               <button type="button" id="btn-pregen-image-lib" class="btn btn--secondary">Elegir de la biblioteca</button>
+              <button type="button" id="btn-pregen-image-web" class="btn btn--secondary" aria-haspopup="dialog">Buscar en internet</button>
             </div>
           </div>
           <p class="pregen-progress" id="pregen-images-progress" role="status"></p>
@@ -387,6 +387,7 @@
             <div class="pregen-actions">
               <button type="button" id="btn-pregen-video" class="btn btn--secondary">Generar video</button>
               <button type="button" id="btn-pregen-video-lib" class="btn btn--secondary">Elegir de la biblioteca</button>
+              <button type="button" id="btn-pregen-video-web" class="btn btn--secondary" aria-haspopup="dialog">Buscar en internet</button>
             </div>
           </div>
           <p class="pregen-progress" id="pregen-videos-progress" role="status"></p>
@@ -409,6 +410,44 @@
           </div>
         </div>
       </div>
+
+
+      <dialog class="pregen-web" id="pregen-web" aria-labelledby="pregen-web-title">
+        <div class="pregen-web__box">
+          <div class="pregen-modal__head">
+            <h3 id="pregen-web-title">Buscar imágenes en internet</h3>
+            <button type="button" id="btn-pregen-web-close" class="btn btn--link">Cerrar</button>
+          </div>
+          <div class="pregen-web__search">
+            <div class="pregen-search__field pregen-search__field--grow">
+              <label for="pregen-web-q">¿Qué buscar?</label>
+              <input type="text" id="pregen-web-q" maxlength="120" autocomplete="off" autofocus placeholder="Ej: arreglo floral rústico sobre mesa de madera">
+            </div>
+            <button type="button" id="btn-pregen-web-suggest" class="btn btn--link">Sugerir búsqueda</button>
+          </div>
+          <div class="pregen-web__controls">
+            <fieldset class="pregen-seg">
+              <legend>Orientación</legend>
+              <label><input type="radio" name="pregen-web-orient" value="landscape" checked><span>Horizontal</span></label>
+              <label><input type="radio" name="pregen-web-orient" value="portrait"><span>Vertical</span></label>
+              <label><input type="radio" name="pregen-web-orient" value="square"><span>Cuadrada</span></label>
+            </fieldset>
+            <button type="button" id="btn-pregen-web-search" class="btn btn--primary">Buscar</button>
+          </div>
+          <div class="pregen-search__suggestions" id="pregen-web-suggestions"></div>
+          <p class="pregen-web__status" id="pregen-web-status" role="status" aria-live="polite"></p>
+          <ul class="pregen-web__cards" id="pregen-web-results" aria-label="Resultados de la búsqueda"></ul>
+          <div class="pregen-web__pager" id="pregen-web-pager" hidden>
+            <button type="button" id="btn-pregen-web-more" class="btn btn--secondary">Otras 3</button>
+            <button type="button" id="btn-pregen-web-new" class="btn btn--link">Nueva búsqueda</button>
+          </div>
+          <div class="pregen-modal__foot pregen-web__foot">
+            <span id="pregen-web-count" role="status" aria-live="polite">0 elegidas</span>
+            <button type="button" id="btn-pregen-web-cancel" class="btn btn--link">Cancelar</button>
+            <button type="button" id="btn-pregen-web-add" class="btn btn--primary" disabled>Agregar al proyecto</button>
+          </div>
+        </div>
+      </dialog>
 
       <p class="field__error" id="err-contexto" role="alert"></p>
 
@@ -476,8 +515,6 @@
       </header>
 
       <div class="ejecutor__toolbar">
-        <button type="button" id="btn-provider-config" class="btn btn--secondary">Configuración</button>
-        <span id="provider-summary" class="ejecutor__provider-summary"></span>
         <button type="button" id="btn-open-window" class="btn btn--secondary">Abrir en ventana nueva</button>
         <button type="button" id="btn-cancel-execute" class="btn btn--secondary" hidden>Cancelar</button>
       </div>
@@ -827,6 +864,8 @@
   </main>
 </div>
 
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
 <dialog id="dialog-confirm" class="dialog" aria-label="Confirmación">
   <h2 id="dialog-confirm-title"></h2>
   <p id="dialog-confirm-message"></p>
@@ -883,5 +922,8 @@
 <script src="app.js"></script>
 <script defer src="loaders.js"></script>
 <script defer src="fx.js"></script>
+<button type="button" class="fab-clear" id="fab-clear-all" aria-haspopup="dialog" aria-label="Limpiar todo: borra lo cargado en pantalla (no toca el Banco ni la Configuración)" title="Limpiar todo (no toca el Banco ni la Configuración)">
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+</button>
 </body>
 </html>

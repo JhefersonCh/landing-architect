@@ -386,15 +386,16 @@ function createMedia(opts) {
     'Los 5 colores son los dominantes en hex. Cada valor máx. 90 caracteres. No inventes lo que no se ve.',
   ].join('\n');
 
-  // Foto remota de Pexels para el análisis de layout: solo https en el host de
-  // imágenes de Pexels (sin SSRF), versión reducida y sin guardarla en disco.
-  const REMOTE_DESCRIBE_HOSTS = ['images.pexels.com'];
+  // Foto remota para el análisis de layout: solo https y una lista CERRADA de
+  // hosts de CDN de imágenes (Pexels y Pixabay; sin SSRF), sin guardarla en disco.
+  // Pexels admite versión reducida por query; el CDN de Pixabay se pide tal cual.
+  const REMOTE_DESCRIBE_HOSTS = ['images.pexels.com', 'cdn.pixabay.com'];
   async function fetchRemoteImage(rawUrl) {
     const startedAt = Date.now();
     try {
       const u = new URL(String(rawUrl));
       if (u.protocol !== 'https:' || REMOTE_DESCRIBE_HOSTS.indexOf(u.hostname) === -1) return null;
-      u.search = '?auto=compress&cs=tinysrgb&w=800';
+      if (u.hostname === 'images.pexels.com') u.search = '?auto=compress&cs=tinysrgb&w=800';
       const res = await timedFetch(u.toString(), {}, 30000);
       if (!res.ok) { logCall(u.hostname, 'describe-fetch', res.status, startedAt); return null; }
       const buf = Buffer.from(await res.arrayBuffer());
@@ -574,7 +575,7 @@ function createMedia(opts) {
     for (const ru of remote) {
       // eslint-disable-next-line no-await-in-loop
       const got = await fetchRemoteImage(ru);
-      if (!got) return makeError(404, 'No se pudo obtener la foto remota (solo se admiten fotos de Pexels).');
+      if (!got) return makeError(404, 'No se pudo obtener la foto remota (solo se admiten fotos de Pexels y Pixabay).');
       images.push({ mime: got.mime, data: got.buf.toString('base64') });
     }
     const frames = Array.isArray(p.frames) ? p.frames.slice(0, 8) : [];
@@ -757,7 +758,7 @@ function createMedia(opts) {
   async function search(payload) {
     const p = payload || {};
     const type = p.type === 'video' ? 'video' : 'photo';
-    const perQuery = Math.min(5, Math.max(1, Number(p.perQuery) || (type === 'video' ? 1 : 2)));
+    const perQuery = Math.min(12, Math.max(1, Number(p.perQuery) || (type === 'video' ? 1 : 2)));
     const queries = (Array.isArray(p.queries) ? p.queries : []).slice(0, 12).map((q) => (typeof q === 'string' ? { query: q } : q))
       .filter((q) => q && typeof q.query === 'string' && q.query.trim());
     if (!queries.length) return makeError(400, 'Enviá al menos una búsqueda (queries).');

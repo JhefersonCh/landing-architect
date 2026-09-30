@@ -1109,6 +1109,76 @@ function shortSeed(seed) {
   return s.length > 20 ? `${s.slice(0, 8)}…${s.slice(-8)}` : s;
 }
 
+function groupSeed(seed) {
+  return (String(seed || '').match(/.{1,8}/g) || []).join(' ');
+}
+
+// Semilla visible entera: resumen abreviado que se despliega completo (en
+// bloques de 8), con "Copiar" y, opcionalmente, "Usar esta semilla".
+// opts: { label, onCopy(seed) → Promise<bool>, onUse(seed), className }
+function buildSeedView(seed, opts) {
+  const o = opts || {};
+  const wrap = document.createElement('div');
+  wrap.className = `seed-view ${o.className || ''}`.trim();
+  const details = document.createElement('details');
+  details.className = 'seed-view__details';
+  const summary = document.createElement('summary');
+  summary.className = 'seed-view__summary';
+  if (o.label) {
+    const lab = document.createElement('span');
+    lab.className = 'seed-view__label';
+    lab.textContent = o.label;
+    summary.appendChild(lab);
+  }
+  const short = document.createElement('code');
+  short.className = 'seed-view__short';
+  short.textContent = shortSeed(seed);
+  summary.appendChild(short);
+  const hint = document.createElement('span');
+  hint.className = 'seed-view__hint';
+  hint.textContent = 'ver completa';
+  summary.appendChild(hint);
+  details.appendChild(summary);
+  const full = document.createElement('code');
+  full.className = 'seed-view__full';
+  full.textContent = groupSeed(seed);
+  full.setAttribute('aria-label', `Cadena semilla completa: ${seed}`);
+  details.appendChild(full);
+  details.addEventListener('toggle', () => { hint.textContent = details.open ? 'ocultar' : 'ver completa'; });
+  wrap.appendChild(details);
+
+  const actions = document.createElement('div');
+  actions.className = 'seed-view__actions';
+  const status = document.createElement('span');
+  status.className = 'seed-view__status';
+  status.setAttribute('role', 'status');
+  if (o.onCopy) {
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'btn btn--secondary btn--small';
+    copy.textContent = 'Copiar';
+    copy.setAttribute('aria-label', 'Copiar la cadena semilla completa');
+    copy.addEventListener('click', async () => {
+      const ok = await o.onCopy(seed);
+      status.textContent = ok ? 'Copiada.' : 'No se pudo copiar.';
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    });
+    actions.appendChild(copy);
+  }
+  if (o.onUse) {
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = 'btn btn--secondary btn--small';
+    use.textContent = 'Usar esta semilla';
+    use.setAttribute('aria-label', 'Cargar esta cadena semilla en el paso 2');
+    use.addEventListener('click', () => { o.onUse(seed); });
+    actions.appendChild(use);
+  }
+  actions.appendChild(status);
+  wrap.appendChild(actions);
+  return wrap;
+}
+
 // Mezcla final de 32 bits (fmix de murmur3): FNV solo deja los bits bajos
 // poco mezclados, y acá necesitamos números uniformes en [0, 1).
 function mix32(h) {
@@ -3441,6 +3511,25 @@ function buildSearchQueriesPrompt({ project, referenceNotes, direction, wantVide
   ].filter((l) => l !== null && l !== undefined).join('\n');
 }
 
+// «Sugerir búsqueda» del paso 2: 1 a 3 consultas en inglés con lo que ya se sabe
+// del proyecto (datos, concepto, decisiones de la semilla). Devuelve el mismo JSON que parseSearchQueries.
+function buildSuggestSearchPrompt({ project, direction, referenceNotes, conceptBrief, video }) {
+  return [
+    `Sos director de arte. Sugerí de 1 a 3 búsquedas para encontrar ${video ? 'un video' : 'fotos'} de stock en un banco (Pexels/Pixabay) para esta landing page.`,
+    '',
+    briefLines(project),
+    direction ? `\nDIRECCIÓN VISUAL (resumen):\n${direction}` : '',
+    referenceNotes ? `\nREFERENCIA VISUAL (guía de estilo):\n${referenceNotes}` : '',
+    conceptBrief ? `\nCONCEPTO RECTOR: ${conceptBrief}` : '',
+    '',
+    'Devolvé SOLO un JSON (sin explicación, sin vallas): {"photos":[{"query":"...","orientation":"landscape|portrait|square"}]}',
+    '',
+    'Reglas:',
+    '- Consultas en INGLÉS, 3 a 6 palabras, con sujeto + escena + luz o material. Nada genérico como "business" o "success".',
+    video ? '- Movimiento sutil y cinematográfico apto como fondo de hero, sin personas ni texto.' : '- Evitá logos, texto y personas posando mirando a cámara.',
+  ].filter((l) => l !== null && l !== undefined).join('\n');
+}
+
 function parseSearchQueries(text) {
   const j = parseJsonLoose(text);
   const arr = Array.isArray(j) ? j : (j && Array.isArray(j.photos) ? j.photos : []);
@@ -3754,8 +3843,11 @@ function normalizePregen(p) {
       width: num(x.width), height: num(x.height),
       prompt: typeof x.prompt === 'string' ? x.prompt.slice(0, 800) : '',
       source: typeof x.source === 'string' ? x.source.slice(0, 40) : '',
-      origin: x.origin === 'library' ? 'library' : 'generated',
+      origin: x.origin === 'library' ? 'library' : (x.origin === 'stock' ? 'stock' : 'generated'),
     };
+    // Créditos del banco de fotos: solo para el panel Recursos (la página no los lleva)
+    if (typeof x.credit === 'string' && x.credit.trim()) it.credit = x.credit.trim().slice(0, 160);
+    if (typeof x.creditUrl === 'string' && /^https:\/\/[^\s"'<>]+$/.test(x.creditUrl.trim())) it.creditUrl = x.creditUrl.trim().slice(0, 400);
     if (x.analysis && typeof x.analysis === 'object') it.analysis = x.analysis;
     if (video) {
       it.poster = okUrl(x.poster) ? x.poster.trim() : '';
@@ -3818,6 +3910,14 @@ function describeMediaBackends(status, prefs) {
 // Convierte un ítem pre-generado en un activo del pool (misma forma que los generados en el pipeline).
 function pregenToAsset(p, origin, tema, video) {
   const abs = (u) => absoluteMediaUrl(u, origin);
+  const credit = p.credit ? { credit: p.credit, creditUrl: p.creditUrl } : {};
+  if (!video && p.origin === 'stock') {
+    // Foto de internet elegida ANTES del prompt: se trata como activo generado (la página se diseña alrededor)
+    return Object.assign({
+      url: abs(p.url), type: 'foto', role: p.role || 'imagen', alt: p.alt || `${p.role || 'Imagen'} para ${tema || 'la marca'}`,
+      width: p.width, height: p.height, source: p.source || 'stock', analysis: p.analysis, pregen: true,
+    }, credit);
+  }
   if (!video) {
     return {
       url: abs(p.url), type: 'imagen generada', role: p.role || 'imagen',
@@ -3826,11 +3926,11 @@ function pregenToAsset(p, origin, tema, video) {
       analysis: p.analysis, pregen: true,
     };
   }
-  return {
+  return Object.assign({
     url: abs(p.url), poster: abs(p.poster || ''), webm: p.webm ? abs(p.webm) : undefined, type: 'video', role: p.role || 'hero',
     source: p.source || (p.origin === 'library' ? 'biblioteca' : 'ffmpeg'), width: p.width, height: p.height, duration: p.duration,
     alt: p.alt || `Video de fondo de ${tema || 'la marca'}`, analysis: p.analysis, pregen: true,
-  };
+  }, credit);
 }
 
 // Genera UNA imagen. -> { item } | { error }.
@@ -3921,6 +4021,12 @@ async function searchStockVideos(c, status, videoQueries) {
   return out;
 }
 
+// Hosts de imágenes remotas que el servidor acepta en describe.remoteUrls (lista
+// cerrada, igual a media.js REMOTE_DESCRIBE_HOSTS). Fotos de Pexels y CDN de Pixabay.
+function isDescribableRemote(u) {
+  return /^https:\/\/(?:images\.pexels\.com|cdn\.pixabay\.com)\//i.test(String(u || ''));
+}
+
 // Analiza (Gemini 'layout' o canvas local) los ítems que aún no tienen análisis.
 // targets: [{ item, url, role }]. Muta item.analysis. Devuelve avisos.
 async function analyzeGeneratedTargets(targets, c, status) {
@@ -3936,13 +4042,17 @@ async function analyzeGeneratedTargets(targets, c, status) {
     if (cancelled()) break;
     let an = null;
     try {
-      if (gate.on && /^\/media\//.test(urlBase(tg.url))) {
+      const sameOrigin = !/^https?:\/\//i.test(urlBase(tg.url));
+      const body = /^\/media\//.test(urlBase(tg.url)) ? { assetIds: [urlBase(tg.url)], mode: 'layout' }
+        : (isDescribableRemote(tg.url) ? { remoteUrls: [tg.url], mode: 'layout' } : null);
+      if (gate.on && body) {
         // eslint-disable-next-line no-await-in-loop
-        const r = await api.describe({ assetIds: [urlBase(tg.url)], mode: 'layout' });
+        const r = await api.describe(body);
         if (r && r.ok && r.data && r.data.description) an = parseLayoutAnalysis(r.data.description, 'gemini');
         if (!an && !geminiFailed) geminiFailed = (r && r.error) || 'respuesta ilegible';
       }
-      if (!an && api.analyzeLocal) {
+      // El canvas solo mide imágenes del mismo origen (una remota lo contamina)
+      if (!an && api.analyzeLocal && sameOrigin) {
         // eslint-disable-next-line no-await-in-loop
         an = normalizeLayoutAnalysis(await api.analyzeLocal(tg.url, tg.role), 'local');
       }
@@ -4051,6 +4161,8 @@ async function collectAssets(ctx) {
       const found = await api.search({ queries: queries.photos, type: 'photo', perQuery: 2 });
       if (found && found.ok && found.data) {
         const seen = new Set(assets.required.map((r) => urlBase(r.url)));
+        // Lo elegido en el paso 2 (internet, biblioteca o generado) ya es un activo: no se duplica
+        preImgs.concat(preVids).forEach((p) => { seen.add(urlBase(absoluteMediaUrl(p.url, origin))); });
         (found.data.items || []).forEach((it) => {
           const url = absoluteMediaUrl(it.url, origin);
           if (seen.has(urlBase(url)) || assets.photos.length >= 14) return;
@@ -4118,7 +4230,7 @@ async function collectAssets(ctx) {
   // f) Análisis de los activos generados (imágenes + póster del video): base de la maqueta.
   // Solo los que aún no tienen análisis (los pre-generados suelen traerlo).
   const targets = assets.generated.map((g) => ({ item: g, url: g.url, role: g.role }))
-    .concat(assets.videos.filter((v) => v.poster && (v.source === 'ffmpeg' || (v.pregen && /^\/media\//.test(urlBase(v.poster))))).map((v) => ({ item: v, url: v.poster, role: v.role })));
+    .concat(assets.videos.filter((v) => v.poster && (v.source === 'ffmpeg' || (v.pregen && (/^\/media\//.test(urlBase(v.poster)) || isDescribableRemote(v.poster))))).map((v) => ({ item: v, url: v.poster, role: v.role })));
   if (targets.some((tg) => !tg.item.analysis)) {
     setStage('Analizando activos generados…');
     (await analyzeGeneratedTargets(targets, Object.assign({}, c, { cancelled, log }), status)).forEach(notice);
@@ -4328,7 +4440,7 @@ function buildRecursosVisualesBlock(assets, techniques) {
     parts.push('');
   }
   if (a.generated.length) {
-    parts.push('IMÁGENES GENERADAS (URL exacta):');
+    parts.push(a.generated.some((g) => g.type === 'foto') ? 'IMÁGENES GENERADAS O ELEGIDAS ANTES DEL PROMPT (URL exacta):' : 'IMÁGENES GENERADAS (URL exacta):');
     parts.push(a.generated.map((r) => formatAssetItem(r, undefined, true)).join('\n'));
     parts.push('');
     parts.push(buildGeneratedReferenceLines(a).join('\n'));
@@ -6509,14 +6621,12 @@ function renderBank(bank, container, handlers) {
     body.appendChild(meta);
 
     if (vm.ssotSeed) {
-      const seedEl = document.createElement('p');
-      seedEl.className = 'bank-card__seed';
-      seedEl.appendChild(document.createTextNode('Semilla: '));
-      const seedCode = document.createElement('code');
-      seedCode.textContent = shortSeed(vm.ssotSeed);
-      seedCode.title = vm.ssotSeed;
-      seedEl.appendChild(seedCode);
-      body.appendChild(seedEl);
+      body.appendChild(buildSeedView(vm.ssotSeed, {
+        label: 'Semilla:',
+        className: 'bank-card__seed',
+        onCopy: handlers && handlers.onCopySeed ? (seed) => handlers.onCopySeed(seed) : null,
+        onUse: handlers && handlers.onUseSeed ? (seed) => handlers.onUseSeed(seed) : null,
+      }));
     }
 
     if (vm.folderPath) {
@@ -6609,7 +6719,7 @@ if (typeof module !== 'undefined' && module.exports) {
     TECHNIQUES, ALL_TECHNIQUE_IDS, normalizeTechniques, hasTechnique, getHeadings, describeTechniques,
     deriveDeterministicSeed, makeTechniqueSeed, buildSynergyRules, loadTechniquesSetting, saveTechniquesSetting,
     emptyAssets, normalizeAssets, hasAssetsContent, collectAssets, buildRecursosVisualesBlock,
-    describeMediaBackends, emptyPregen, normalizePregen, loadPregen, savePregen, activePregen, pregenToAsset, generateImageItem, generateFramesVideo, searchStockVideos, analyzeGeneratedTargets, PREGEN_KEY, PREGEN_MAX_ITEMS,
+    describeMediaBackends, emptyPregen, normalizePregen, loadPregen, savePregen, activePregen, pregenToAsset, generateImageItem, generateFramesVideo, buildSuggestSearchPrompt, isDescribableRemote, searchStockVideos, analyzeGeneratedTargets, PREGEN_KEY, PREGEN_MAX_ITEMS,
     absoluteMediaUrl, parseJsonLoose, buildSearchQueriesPrompt, parseSearchQueries, buildImagePromptsPrompt, parseImagePrompts,
     normalizeLayoutAnalysis, parseLayoutAnalysis, analyzeLayoutGrid, buildShotListPrompt, parseShotList, pickHeroGenerated,
     validateAssetCoherence, buildGeneratedReferenceLines, validateSectionOrder, validatePromptLength, collectSoftViolations,
@@ -6631,7 +6741,7 @@ if (typeof module !== 'undefined' && module.exports) {
     DESIGN_AXES, SSOT_TOKEN, substituteSeedToken, forceInsertSSoTToken,
     frameworkFromTechKeys, frameworkFromLabels, parseProjectFiles, looksLikeProjectFiles,
     extractProjectFilesText, normalizeProjectFilesText, promptWantsProjectFiles, detectProjectTechnology,
-    techBlockers, sanitizeTechSelection, reasoningParams,
+    techBlockers, sanitizeTechSelection, reasoningParams, buildSeedView, groupSeed,
     INTERACTION_PARADIGMS, parseConcepts, buildFallbackConcept, resolveConcepts, normalizeConcept,
     buildConceptIdeationPrompt, buildConceptoRectorBlock, conceptTechLine, deriveCreativeDirection,
     CONCEPT_PICK_KEY, emptyConceptPick, normalizeConceptPick, loadConceptPick, saveConceptPick, chosenConceptOf, conceptPickIsStale, conceptBriefOf,
@@ -6660,6 +6770,7 @@ if (typeof document !== 'undefined') {
       conceptPick: loadConceptPick(), // concepto rector elegido en el paso 2 ('lpa_concept_pick_v1')
       pregen: loadPregen(),      // imágenes/video generados (o elegidos) en el paso 2, ANTES del prompt ('lpa_pregen_v1')
       genEpoch: 0,               // +1 en cada "Generar Prompt": invalida assetsCache
+      resetEpoch: 0,             // +1 en cada "Limpiar todo": descarta resultados de generaciones que seguían en curso
       genTechniques: null,      // snapshot de state.techniques al pulsar "Generar Prompt"
       postExec: null,           // estado de las pasadas posteriores a la ejecución (técnicas 3 y 8)
       templateGeneration: null, // generatePrompt(...) de plantilla: base para Dirección creativa y respaldo
@@ -6740,6 +6851,9 @@ if (typeof document !== 'undefined') {
       els.btnPregenImageLib = document.getElementById('btn-pregen-image-lib');
       els.btnPregenVideo = document.getElementById('btn-pregen-video');
       els.btnPregenVideoLib = document.getElementById('btn-pregen-video-lib');
+      els.btnPregenImageWeb = document.getElementById('btn-pregen-image-web');
+      els.btnPregenVideoWeb = document.getElementById('btn-pregen-video-web');
+      els.pregenWeb = document.getElementById('pregen-web');
       els.btnPregenLibraryClose = document.getElementById('btn-pregen-library-close');
       els.btnPregenLibraryAdd = document.getElementById('btn-pregen-library-add');
       els.ssotSeedDisplay = document.getElementById('ssot-seed-display');
@@ -7316,8 +7430,9 @@ if (typeof document !== 'undefined') {
         renderMediaLists();
         // eslint-disable-next-line no-await-in-loop -- una por vez: no saturar el servidor local
         await processMediaFile(file, pend, kind, mime, type);
-        state.mediaBusy--;
+        state.mediaBusy = Math.max(0, state.mediaBusy - 1);
         renderMediaLists();
+        if (pend.dropped) break;
       }
     }
 
@@ -7329,6 +7444,7 @@ if (typeof document !== 'undefined') {
         ]);
         const up = await uploadJson({ name: file.name, mime, dataBase64: b64, kind, session: mediaSessionId() }, (f) => { pend.progress = f; renderMediaLists(); });
         if (!up.ok) { pend.pending = false; pend.error = up.error; return; }
+        if (pend.dropped) return; // "Limpiar todo" corrió durante la subida: no se re-agrega (el archivo queda en disco)
         const d = up.data;
         const item = sanitizeMediaItem({
           id: d.id, url: d.url, name: file.name, mime: d.mime, type: d.type, kind, role: kind === 'required' ? 'otro' : '',
@@ -8178,7 +8294,7 @@ if (typeof document !== 'undefined') {
      * cual (collectAssets ctx.pregen) sin volver a generar.
      */
 
-    const pregenState = { busy: false, run: null, statusRequested: false, libKind: 'image', libItems: [], libSelected: new Set(), libTrigger: null };
+    const pregenState = { busy: false, run: null, epoch: 0, llmRunId: null, statusRequested: false, libKind: 'image', libItems: [], libSelected: new Set(), libTrigger: null, analyzing: new Set() };
 
     const pregenTema = () => ((state.project && state.project.tema) || '').trim();
     const sameTema = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
@@ -8200,12 +8316,14 @@ if (typeof document !== 'undefined') {
 
     // activo devuelto por generateImageItem/generateFramesVideo/stock -> ítem persistible (URL relativa a /media)
     function toPregenItem(asset, video, origin) {
-      const rel = (u) => (u ? (urlBase(u) || u) : '');
+      // Remotas (internet) se guardan tal cual; las locales, sin origen ni query
+      const rel = (u) => (u ? (/^https?:\/\/(?!127\.0\.0\.1|localhost)/i.test(u) ? u : (urlBase(u) || u)) : '');
       const it = {
         id: newPregenId(), url: rel(asset.url), role: asset.role || (video ? 'hero' : 'imagen'), alt: asset.alt || '',
         width: asset.width, height: asset.height, prompt: asset.prompt || '', source: asset.source || '', origin: origin || 'generated',
         analysis: asset.analysis,
       };
+      if (asset.credit) { it.credit = asset.credit; if (asset.creditUrl) it.creditUrl = asset.creditUrl; }
       if (video) { it.poster = rel(asset.poster); if (asset.webm) it.webm = rel(asset.webm); it.duration = asset.duration; }
       return it;
     }
@@ -8242,11 +8360,13 @@ if (typeof document !== 'undefined') {
 
     function makePregenCtx(setStage) {
       const runId = generateClientRunId();
+      const ctxEpoch = pregenState.epoch;
+      pregenState.llmRunId = runId;
       return {
         project: state.project || {}, direction: pregenDirection(), referenceNotes: pregenReferenceNotes(),
         origin: '', api: mediaApi, conceptBrief: pregenConceptBrief(), vision: resolveVisionConfig(state.mediaPrefs, state.provider),
         llm: (prompt) => runLLM({ prompt, expect: 'text', runId }),
-        setStage: setStage || (() => {}), cancelled: () => false, log: (m) => console.log(`[pregen] ${m}`),
+        setStage: setStage || (() => {}), cancelled: () => ctxEpoch !== pregenState.epoch, log: (m) => console.log(`[pregen] ${m}`),
       };
     }
 
@@ -8304,10 +8424,20 @@ if (typeof document !== 'undefined') {
       const tag = document.createElement('span');
       tag.className = 'pregen-card__tag';
       tag.textContent = `${item.role || (video ? 'hero' : 'imagen')} · ${item.origin === 'library' ? 'biblioteca' : (item.source || 'generado')}`;
+      const badge = document.createElement('span');
+      badge.className = `pregen-card__badge pregen-card__badge--${item.origin === 'stock' ? 'web' : (item.origin === 'library' ? 'lib' : 'ai')}`;
+      badge.textContent = item.origin === 'stock' ? 'Internet' : (item.origin === 'library' ? 'Biblioteca' : 'IA');
+      li.appendChild(badge);
       li.appendChild(tag);
       if (item.analysis) li.appendChild(pregenSwatches(item.analysis));
+      else if (item.origin === 'stock') {
+        const na = document.createElement('span');
+        na.className = 'pregen-card__free';
+        na.textContent = pregenState.analyzing.has(item.id) ? 'Analizando composición…' : 'sin análisis (visión no disponible)';
+        li.appendChild(na);
+      }
       let edit = null;
-      if (!video && item.prompt && item.origin !== 'library') {
+      if (!video && item.prompt && item.origin === 'generated') {
         edit = document.createElement('input');
         edit.type = 'text'; edit.className = 'pregen-card__edit'; edit.value = item.prompt; edit.maxLength = 800;
         edit.setAttribute('aria-label', `Prompt de la imagen ${index + 1} (editable antes de regenerar)`);
@@ -8315,7 +8445,7 @@ if (typeof document !== 'undefined') {
       }
       const row = document.createElement('div');
       row.className = 'pregen-card__row';
-      if (item.origin !== 'library') {
+      if (item.origin === 'generated') {
         const rg = document.createElement('button');
         rg.type = 'button'; rg.className = 'btn btn--secondary'; rg.textContent = 'Regenerar'; rg.dataset.action = 'regen';
         rg.disabled = pregenState.busy;
@@ -8399,6 +8529,7 @@ if (typeof document !== 'undefined') {
         else els.pregenVideosGrid.appendChild(pregenCard('video', it, i));
       });
       if (run && run.kind === 'video' && !state.pregen.videos.length) els.pregenVideosGrid.appendChild(pregenPending('Generando…'));
+      updatePregenSearchControls();
     }
 
     function pregenBackendOrExplain(kind) {
@@ -8414,30 +8545,35 @@ if (typeof document !== 'undefined') {
       if (!pregenBackendOrExplain('image')) { renderPregenPanel(); return; }
       pregenState.busy = true;
       pregenState.run = { kind: 'images', total: 0, added: 0 };
+      const ep = pregenState.epoch;
+      const gone = () => ep !== pregenState.epoch; // "Limpiar todo" corrió mientras se generaba
       setPregenProgress('image', 'Diseñando imágenes a generar…');
       renderPregenPanel();
       const errors = [];
       try {
         const c = makePregenCtx((l) => setPregenProgress('image', l));
         const res = await c.llm(buildImagePromptsPrompt({ project: c.project, referenceNotes: c.referenceNotes, direction: c.direction, restrictions: state.techniques.indexOf(7) !== -1, conceptBrief: c.conceptBrief }));
+        if (gone()) return;
         const prompts = (res && res.ok) ? parseImagePrompts(res.text) : [];
         if (!prompts.length) {
           setPregenProgress('image', `El modelo no propuso prompts de imagen utilizables${res && !res.ok && res.error ? ` (${res.error})` : ''}. Probá de nuevo o elegí de la biblioteca.`, true);
           return;
         }
         pregenFresh();
-        state.pregen.images = state.pregen.images.filter((x) => x.origin === 'library');
+        state.pregen.images = state.pregen.images.filter((x) => x.origin !== 'generated');
         pregenState.run.total = prompts.length;
         for (let i = 0; i < prompts.length; i++) {
           setPregenProgress('image', `Generando imagen ${i + 1}/${prompts.length}…`);
           renderPregenPanel();
           // eslint-disable-next-line no-await-in-loop -- secuencial: cuota gratuita y consistencia
           const g = await generateImageItem(c, prompts[i]);
+          if (gone()) return;
           if (g.item) {
             setPregenProgress('image', `Analizando imagen ${i + 1}/${prompts.length}…`);
             const it = toPregenItem(g.item, false, 'generated');
             // eslint-disable-next-line no-await-in-loop
             await analyzeGeneratedTargets([{ item: it, url: it.url, role: it.role }], c, status);
+            if (gone()) return;
             if (state.pregen.images.length < PREGEN_MAX_ITEMS) state.pregen.images.push(it);
           } else errors.push(`imagen ${i + 1}: ${g.error}`);
           pregenState.run.added = i + 1;
@@ -8445,11 +8581,13 @@ if (typeof document !== 'undefined') {
         }
         setPregenProgress('image', errors.length ? `Listo, con fallos (${errors.join('; ')}).` : `Listo: ${prompts.length} imágenes.`, errors.length > 0);
       } catch (e) {
-        setPregenProgress('image', `No se pudieron generar las imágenes: ${(e && e.message) || e}`, true);
+        if (!gone()) setPregenProgress('image', `No se pudieron generar las imágenes: ${(e && e.message) || e}`, true);
       } finally {
-        pregenState.busy = false; pregenState.run = null;
-        pregenPersist();
-        renderPregenPanel();
+        if (!gone()) {
+          pregenState.busy = false; pregenState.run = null;
+          pregenPersist();
+          renderPregenPanel();
+        }
       }
     }
 
@@ -8463,25 +8601,31 @@ if (typeof document !== 'undefined') {
       if (!pregenBackendOrExplain('image')) { renderPregenPanel(); return; }
       pregenState.busy = true;
       pregenState.run = { kind: 'images', total: 0, added: 0, regenId: id };
+      const ep = pregenState.epoch;
+      const gone = () => ep !== pregenState.epoch;
       setPregenProgress('image', 'Regenerando imagen…');
       renderPregenPanel();
       try {
         const c = makePregenCtx();
         const g = await generateImageItem(c, { prompt, role: it.role, width: it.width || IMAGE_SIZES.landscape[0], height: it.height || IMAGE_SIZES.landscape[1] });
+        if (gone()) return;
         if (g.item) {
           const fresh = toPregenItem(g.item, false, 'generated');
           fresh.id = it.id;
           await analyzeGeneratedTargets([{ item: fresh, url: fresh.url, role: fresh.role }], c, status);
+          if (gone()) return;
           const idx = state.pregen.images.findIndex((x) => x.id === id);
           if (idx !== -1) state.pregen.images[idx] = fresh;
           setPregenProgress('image', 'Imagen regenerada.');
         } else setPregenProgress('image', `No se pudo regenerar: ${g.error}`, true);
       } catch (e) {
-        setPregenProgress('image', `No se pudo regenerar: ${(e && e.message) || e}`, true);
+        if (!gone()) setPregenProgress('image', `No se pudo regenerar: ${(e && e.message) || e}`, true);
       } finally {
-        pregenState.busy = false; pregenState.run = null;
-        pregenPersist();
-        renderPregenPanel();
+        if (!gone()) {
+          pregenState.busy = false; pregenState.run = null;
+          pregenPersist();
+          renderPregenPanel();
+        }
       }
     }
 
@@ -8491,6 +8635,8 @@ if (typeof document !== 'undefined') {
       if (!pregenBackendOrExplain('video')) { renderPregenPanel(); return; }
       pregenState.busy = true;
       pregenState.run = { kind: 'video', total: 1, added: 0 };
+      const ep = pregenState.epoch;
+      const gone = () => ep !== pregenState.epoch;
       setPregenProgress('video', 'Preparando el video…');
       renderPregenPanel();
       try {
@@ -8508,6 +8654,7 @@ if (typeof document !== 'undefined') {
           if (s.videos[0]) video = s.videos[0];
           s.notices.forEach((n) => notices.push(n));
         }
+        if (gone()) return;
         if (!video) {
           setPregenProgress('video', notices.join(' ') || 'No se pudo obtener un video.', true);
           return;
@@ -8517,15 +8664,18 @@ if (typeof document !== 'undefined') {
           setPregenProgress('video', 'Analizando el póster…');
           await analyzeGeneratedTargets([{ item: it, url: it.poster, role: it.role }], c, status);
         }
+        if (gone()) return;
         pregenFresh();
-        state.pregen.videos = state.pregen.videos.filter((x) => x.origin === 'library').concat(it).slice(-PREGEN_MAX_ITEMS);
+        state.pregen.videos = state.pregen.videos.filter((x) => x.origin !== 'generated').concat(it).slice(-PREGEN_MAX_ITEMS);
         setPregenProgress('video', notices.length ? notices.join(' ') : 'Video listo.', false);
       } catch (e) {
-        setPregenProgress('video', `No se pudo generar el video: ${(e && e.message) || e}`, true);
+        if (!gone()) setPregenProgress('video', `No se pudo generar el video: ${(e && e.message) || e}`, true);
       } finally {
-        pregenState.busy = false; pregenState.run = null;
-        pregenPersist();
-        renderPregenPanel();
+        if (!gone()) {
+          pregenState.busy = false; pregenState.run = null;
+          pregenPersist();
+          renderPregenPanel();
+        }
       }
     }
 
@@ -8633,6 +8783,324 @@ if (typeof document !== 'undefined') {
           renderPregenPanel();
         } catch (e) { /* el análisis es opcional */ }
       }
+    }
+
+    /* ----- Buscar en internet (modal; Pexels / Pixabay según Configuración) -----
+     * Muestra de a 3 resultados grandes; las elegidas persisten al paginar ("Otras 3").
+     * Lo agregado entra a state.pregen con origin 'stock' y se analiza igual que lo
+     * generado; los créditos se guardan para el panel Recursos (no van a la página). */
+
+    const WEB_PAGE = 3;
+    const WEB_MAX = 12;
+    const web = {
+      kind: 'images', items: [], requested: 0, exhausted: false, offset: 0, loading: false, suggesting: false,
+      message: '', selected: new Map(), suggestions: [], trigger: null, cache: new Map(), key: '',
+    };
+    const webEl = (id) => document.getElementById(`pregen-web-${id}`);
+    const webBtn = (id) => document.getElementById(`btn-pregen-web-${id}`);
+    const webOrient = () => { const r = document.querySelector('input[name="pregen-web-orient"]:checked'); return r ? r.value : 'landscape'; };
+
+    // ¿Hay un servicio de stock utilizable según el estado del servidor, las claves del navegador y Configuración?
+    function pregenStockAvailability() {
+      const st = mediaStatusCache;
+      if (!st) return { ok: false, hint: 'Consultando los servicios de multimedia…' };
+      if (st.unreachable) return { ok: false, hint: 'No se pudo consultar node server.js: la búsqueda en internet no está disponible.' };
+      const pref = state.mediaPrefs && state.mediaPrefs.stock;
+      if (pref === 'none') return { ok: false, hint: 'La búsqueda de stock está desactivada en Configuración.' };
+      const ok = pref === 'pexels' ? !!st.pexels : (pref === 'pixabay' ? !!st.pixabay : !!(st.pexels || st.pixabay));
+      return ok ? { ok: true, hint: '' } : { ok: false, hint: 'Cargá la clave de Pexels o Pixabay en Configuración' };
+    }
+
+    function isWebDialogOpen() { const d = els.pregenWeb; return !!d && (d.open === true || d.hasAttribute('open')); }
+
+    // Botones del panel + estado del modal
+    function updatePregenSearchControls() {
+      const av = pregenStockAvailability();
+      [['image', els.btnPregenImageWeb], ['video', els.btnPregenVideoWeb]].forEach(([, btn]) => {
+        if (!btn) return;
+        btn.disabled = !av.ok || pregenState.busy;
+        btn.title = av.ok ? '' : av.hint;
+      });
+      if (!isWebDialogOpen()) return;
+      const working = web.loading || web.suggesting;
+      const q = webEl('q');
+      q.disabled = !av.ok;
+      webBtn('search').disabled = !av.ok || working;
+      webBtn('suggest').disabled = !av.ok || working;
+      document.querySelectorAll('input[name="pregen-web-orient"]').forEach((r) => { r.disabled = !av.ok; });
+      webEl('status').textContent = av.ok ? web.message : av.hint;
+      webEl('status').classList.toggle('pregen-note--warn', !av.ok);
+      const n = web.selected.size;
+      webEl('count').textContent = `${n} elegida${n === 1 ? '' : 's'}`;
+      webBtn('add').disabled = n === 0 || pregenState.busy || working;
+      const hasMore = web.items.length > web.offset + WEB_PAGE || (!web.exhausted && web.items.length > 0);
+      webEl('pager').hidden = !web.items.length;
+      webBtn('more').disabled = working || !hasMore;
+    }
+
+    function fmtDuration(sec) {
+      const s = Math.round(Number(sec));
+      return s > 0 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : '';
+    }
+
+    function defaultWebRole() {
+      const used = Array.from(web.selected.values()).map((x) => x.role);
+      return used.indexOf('hero') === -1 ? 'hero' : 'galería';
+    }
+
+    function renderWebCards(focusIndex) {
+      const list = webEl('results');
+      list.textContent = '';
+      list.classList.toggle('pregen-web__cards--video', web.kind === 'videos');
+      if (web.loading) {
+        for (let i = 0; i < WEB_PAGE; i++) {
+          const sk = document.createElement('li');
+          sk.className = 'pregen-web__card pregen-web__card--skeleton';
+          sk.setAttribute('aria-hidden', 'true');
+          list.appendChild(sk);
+        }
+        updatePregenSearchControls();
+        return;
+      }
+      const video = web.kind === 'videos';
+      const page = web.items.slice(web.offset, web.offset + WEB_PAGE);
+      page.forEach((it, i) => {
+        const sel = web.selected.get(it.url);
+        const li = document.createElement('li');
+        li.className = `pregen-web__card${sel ? ' pregen-web__card--on' : ''}`;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'pregen-web__toggle';
+        btn.dataset.index = String(i);
+        btn.setAttribute('aria-pressed', sel ? 'true' : 'false');
+        btn.setAttribute('aria-label', `${video ? 'Video' : 'Imagen'} ${web.offset + i + 1}${it.alt ? `: ${it.alt}` : ''}${it.credit ? `. ${it.credit}` : ''}`);
+        let media;
+        if (video) {
+          media = document.createElement('video');
+          media.muted = true; media.loop = true; media.playsInline = true; media.preload = 'none';
+          media.setAttribute('muted', ''); media.setAttribute('playsinline', '');
+          if (it.poster) media.poster = it.poster;
+          media.src = it.url;
+          const play = () => { try { const p = media.play(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* sin vista previa */ } };
+          const stop = () => { try { media.pause(); } catch (e) { /* nada */ } };
+          btn.addEventListener('mouseenter', play); btn.addEventListener('focus', play);
+          btn.addEventListener('mouseleave', stop); btn.addEventListener('blur', stop);
+        } else {
+          media = document.createElement('img');
+          media.setAttribute('loading', 'lazy'); media.alt = ''; media.src = it.url;
+        }
+        media.className = 'pregen-web__media';
+        btn.appendChild(media);
+        const dur = video ? fmtDuration(it.duration) : '';
+        if (dur) btn.appendChild(makeSpan('pregen-web__duration', dur));
+        btn.appendChild(makeSpan('pregen-web__check', sel ? '✓ Me quedo con esta' : 'Tocá para elegir'));
+        btn.addEventListener('click', () => {
+          if (web.selected.has(it.url)) web.selected.delete(it.url);
+          else web.selected.set(it.url, { it, role: defaultWebRole() });
+          renderWebCards(i);
+        });
+        btn.addEventListener('keydown', (e) => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+          if (!step) return;
+          e.preventDefault();
+          const next = list.querySelectorAll('.pregen-web__toggle')[i + step];
+          if (next) next.focus();
+        });
+        li.appendChild(btn);
+        li.appendChild(makeSpan('pregen-web__meta', [it.source || '', it.credit || ''].filter(Boolean).join(' · ')));
+        if (sel) {
+          const role = document.createElement('select');
+          role.className = 'pregen-web__role';
+          role.setAttribute('aria-label', `Rol de la ${video ? 'video' : 'imagen'} elegida ${web.offset + i + 1}`);
+          MEDIA_ROLES.forEach((r) => { const o = document.createElement('option'); o.value = r; o.textContent = r; role.appendChild(o); });
+          role.value = sel.role;
+          role.addEventListener('change', () => { sel.role = role.value; });
+          li.appendChild(role);
+        }
+        list.appendChild(li);
+      });
+      if (focusIndex !== undefined) {
+        const f = list.querySelectorAll('.pregen-web__toggle')[focusIndex];
+        if (f) f.focus();
+      }
+      updatePregenSearchControls();
+    }
+
+    // Garantiza `need` resultados en web.items. Pide WEB_MAX de una sola vez
+    // (antes pedía 3, 6, 9… y re-descargaba lo ya visto en cada "Otras 3"):
+    // la paginación se sirve de lo descargado, sin nuevos pedidos a la API.
+    async function webEnsure(need, q, orientation) {
+      if (web.items.length >= need || web.exhausted) return;
+      const perQuery = WEB_MAX;
+      let r;
+      try {
+        r = await mediaApi.search({ queries: [{ query: q, orientation }], type: web.kind === 'videos' ? 'video' : 'photo', perQuery });
+      } catch (e) { r = { ok: false, error: 'La búsqueda falló.' }; }
+      if (!r || !r.ok) { web.error = (r && r.error) || 'La búsqueda falló.'; return; }
+      const items = (Array.isArray(r.data.items) ? r.data.items : [])
+        .filter((it) => it && typeof it.url === 'string' && /^(?:https:\/\/|\/media\/)/.test(it.url)).slice(0, WEB_MAX);
+      web.notice = (Array.isArray(r.data.notices) ? r.data.notices : []).find(Boolean) || '';
+      web.items = items;
+      web.requested = perQuery;
+      web.exhausted = items.length < perQuery || perQuery >= WEB_MAX;
+      web.cache.set(web.key, { items, requested: perQuery, exhausted: web.exhausted });
+    }
+
+    async function onWebSearch() {
+      if (web.loading || !pregenStockAvailability().ok) return;
+      const q = webEl('q').value.trim();
+      if (!q) { web.message = 'Escribí qué querés buscar.'; updatePregenSearchControls(); webEl('q').focus(); return; }
+      const orientation = webOrient();
+      web.key = `${web.kind}|${q.toLowerCase()}|${orientation}`;
+      const hit = web.cache.get(web.key);
+      web.items = hit ? hit.items : []; web.requested = hit ? hit.requested : 0; web.exhausted = hit ? hit.exhausted : false;
+      web.offset = 0; web.error = ''; web.notice = '';
+      web.loading = true; web.message = 'Buscando en internet…';
+      renderWebCards();
+      await webEnsure(WEB_PAGE, q, orientation);
+      web.loading = false;
+      const n = web.items.slice(0, WEB_PAGE).length;
+      web.message = web.error ? web.error : (n ? `${n} resultado${n === 1 ? '' : 's'}. Tocá los que te sirvan y elegí su rol.` : (web.notice || `Sin resultados para «${q}». Probá otras palabras.`));
+      renderWebCards();
+    }
+
+    async function onWebMore() {
+      if (web.loading) return;
+      const q = webEl('q').value.trim() || web.key.split('|')[1] || '';
+      const next = web.offset + WEB_PAGE;
+      if (web.items.length < next + 1) {
+        web.loading = true; web.message = 'Buscando más…';
+        renderWebCards();
+        await webEnsure(next + WEB_PAGE, q, webOrient());
+        web.loading = false;
+      }
+      if (web.items.length > next) {
+        web.offset = next;
+        const n = web.items.slice(next, next + WEB_PAGE).length;
+        web.message = `${n} resultado${n === 1 ? '' : 's'} más. Lo que elegiste se mantiene.`;
+      } else {
+        web.exhausted = true;
+        web.message = web.error || 'No hay más resultados para esta búsqueda.';
+      }
+      renderWebCards(0);
+    }
+
+    function onWebNew() {
+      web.items = []; web.offset = 0; web.exhausted = false; web.message = '';
+      webEl('results').textContent = '';
+      webEl('q').focus(); webEl('q').select();
+      updatePregenSearchControls();
+    }
+
+    function openPregenWeb(kind, trigger) {
+      if (!els.pregenWeb || !pregenStockAvailability().ok) return;
+      web.kind = kind === 'video' ? 'videos' : 'images';
+      web.trigger = trigger || null;
+      web.items = []; web.offset = 0; web.exhausted = false; web.loading = false; web.suggesting = false;
+      web.message = ''; web.selected = new Map(); web.suggestions = []; web.error = '';
+      webEl('title').textContent = web.kind === 'videos' ? 'Buscar videos en internet' : 'Buscar imágenes en internet';
+      webEl('q').value = '';
+      webEl('suggestions').textContent = '';
+      webEl('results').textContent = '';
+      const first = document.querySelector('input[name="pregen-web-orient"][value="landscape"]');
+      if (first) first.checked = true;
+      if (typeof els.pregenWeb.showModal === 'function') els.pregenWeb.showModal(); else els.pregenWeb.setAttribute('open', '');
+      updatePregenSearchControls();
+      webEl('q').focus();
+    }
+
+    function closePregenWeb() {
+      if (!isWebDialogOpen()) return;
+      if (typeof els.pregenWeb.close === 'function') els.pregenWeb.close(); else els.pregenWeb.removeAttribute('open');
+      const back = web.trigger;
+      web.trigger = null;
+      if (back && typeof back.focus === 'function') back.focus();
+    }
+
+    function onWebKeydown(e) {
+      if (e.key === 'Escape') { e.preventDefault(); closePregenWeb(); return; }
+      if (e.key !== 'Tab') return;
+      // Trampa de foco (el <dialog> modal ya la da; esto cubre navegadores sin showModal)
+      const f = Array.from(els.pregenWeb.querySelectorAll('button, input, select')).filter((x) => !x.disabled && !x.hidden && !x.closest('[hidden]'));
+      if (!f.length) return;
+      const first = f[0]; const last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+
+    // Una sola llamada al LLM, solo al tocar «Sugerir búsqueda».
+    async function onWebSuggest() {
+      if (web.loading || web.suggesting || !pregenStockAvailability().ok) return;
+      web.suggesting = true; web.message = 'Pensando búsquedas…';
+      updatePregenSearchControls();
+      let qs = [];
+      let err = '';
+      try {
+        const c = makePregenCtx();
+        const res = await c.llm(buildSuggestSearchPrompt({ project: c.project, direction: c.direction, referenceNotes: c.referenceNotes, conceptBrief: c.conceptBrief, video: web.kind === 'videos' }));
+        if (res && res.ok) qs = parseSearchQueries(res.text).photos.slice(0, 3);
+        else err = (res && res.error) || '';
+      } catch (e) { err = (e && e.message) || ''; }
+      web.suggesting = false;
+      web.suggestions = qs;
+      const box = webEl('suggestions');
+      box.textContent = '';
+      qs.forEach((sg) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'btn btn--link pregen-search__chip'; b.textContent = sg.query;
+        b.addEventListener('click', () => {
+          webEl('q').value = sg.query;
+          const r = document.querySelector(`input[name="pregen-web-orient"][value="${sg.orientation}"]`);
+          if (r) r.checked = true;
+          webEl('q').focus();
+        });
+        box.appendChild(b);
+      });
+      if (qs.length) {
+        webEl('q').value = qs[0].query;
+        const r = document.querySelector(`input[name="pregen-web-orient"][value="${qs[0].orientation}"]`);
+        if (r) r.checked = true;
+        web.message = `Sugerencia lista${qs.length > 1 ? ` (${qs.length} opciones abajo)` : ''}: tocá «Buscar».`;
+      } else web.message = `El modelo no propuso búsquedas utilizables${err ? ` (${err})` : ''}. Escribí la tuya.`;
+      updatePregenSearchControls();
+    }
+
+    async function onWebAdd() {
+      if (pregenState.busy || !web.selected.size) return;
+      const video = web.kind === 'videos';
+      const key = video ? 'videos' : 'images';
+      const chosen = Array.from(web.selected.values());
+      closePregenWeb();
+      pregenFresh();
+      const have = new Set(state.pregen[key].map((x) => urlBase(x.url)));
+      const added = [];
+      chosen.forEach(({ it, role }) => {
+        if (have.has(urlBase(it.url)) || state.pregen[key].length >= PREGEN_MAX_ITEMS) return;
+        have.add(urlBase(it.url));
+        const item = toPregenItem({
+          url: it.url, poster: it.poster || '', role, alt: it.alt || '', width: it.width, height: it.height, duration: it.duration,
+          source: it.source || 'stock', credit: it.credit, creditUrl: it.creditUrl,
+        }, video, 'stock');
+        state.pregen[key].push(item);
+        added.push(item);
+      });
+      web.selected = new Map();
+      pregenPersist();
+      const kindName = video ? 'video' : 'image';
+      setPregenProgress(kindName, added.length ? `${added.length} de internet agregad${added.length === 1 ? 'o' : 'os'}; analizando su composición…` : `No se agregó nada (duplicados o tope de ${PREGEN_MAX_ITEMS}).`);
+      const targets = added.map((it) => ({ item: it, url: video ? it.poster : it.url, role: it.role })).filter((tg) => tg.url);
+      targets.forEach((tg) => pregenState.analyzing.add(tg.item.id));
+      renderPregenPanel();
+      if (!added.length) return;
+      if (!targets.length) { setPregenProgress(kindName, `${added.length} agregado${added.length === 1 ? '' : 's'} sin póster: sin análisis de composición.`); return; }
+      try {
+        const status = await fetchMediaStatus();
+        await analyzeGeneratedTargets(targets, makePregenCtx(), status);
+      } catch (e) { /* el análisis es opcional */ }
+      targets.forEach((tg) => pregenState.analyzing.delete(tg.item.id));
+      pregenPersist();
+      setPregenProgress(kindName, `${added.length} de internet agregad${added.length === 1 ? 'o' : 'os'}.`);
+      renderPregenPanel();
     }
 
     function onSsotNew() {
@@ -8962,6 +9430,7 @@ if (typeof document !== 'undefined') {
       };
       if (tabKey === state.activeTab) renderGenerador();
       startGenElapsedTimer();
+      const resetEp = state.resetEpoch;
 
       let finalEntry;
       try {
@@ -8978,6 +9447,7 @@ if (typeof document !== 'undefined') {
         };
       }
 
+      if (state.resetEpoch !== resetEp) return; // "Limpiar todo" corrió mientras se generaba: se descarta el resultado
       finalEntry.ssotSeed = genSeed; // se sustituye en {{SSOT_SEED}} al ejecutar y se guarda en el Banco
       state.modelPrompts[tabKey] = finalEntry;
       // "Otros 3 conceptos" desde el Generador: los nuevos pasan a ser la elección del paso 2.
@@ -9060,28 +9530,11 @@ if (typeof document !== 'undefined') {
       const wrap = document.createElement('div');
       wrap.className = 'direction-seed';
       if (entry.ssotSeed) {
-        const row = document.createElement('p');
-        row.className = 'direction-seed__row';
-        row.appendChild(makeSpan('direction-seed__label', 'Cadena semilla:'));
-        const code = document.createElement('code');
-        code.className = 'direction-seed__code';
-        code.textContent = shortSeed(entry.ssotSeed);
-        code.title = entry.ssotSeed;
-        row.appendChild(code);
-        const copy = document.createElement('button');
-        copy.type = 'button';
-        copy.className = 'btn btn--secondary btn--small';
-        copy.textContent = 'Copiar';
-        copy.setAttribute('aria-label', 'Copiar la cadena semilla completa');
-        const status = document.createElement('span');
-        status.className = 'direction-seed__status';
-        status.setAttribute('role', 'status');
-        copy.addEventListener('click', async () => {
-          status.textContent = (await copyText(entry.ssotSeed)) ? 'Copiada.' : 'No se pudo copiar.';
-        });
-        row.appendChild(copy);
-        row.appendChild(status);
-        wrap.appendChild(row);
+        wrap.appendChild(buildSeedView(entry.ssotSeed, {
+          label: 'Cadena semilla:',
+          className: 'direction-seed__row',
+          onCopy: (seed) => copyText(seed),
+        }));
         if (state.ssotSeed !== entry.ssotSeed) {
           const stale = document.createElement('p');
           stale.className = 'direction-seed__stale';
@@ -9194,6 +9647,23 @@ if (typeof document !== 'undefined') {
       const tabKey = state.activeTab;
       const entry = state.modelPrompts[tabKey];
 
+      // Sin nada generado (p. ej. tras "Limpiar todo"): estado vacío, no "Generando…".
+      if (!entry && !state.templateGeneration) {
+        els.promptGenStatus.textContent = 'Todavía no generaste ningún prompt.';
+        els.promptGenStatus.classList.remove('status--loading', 'status--error');
+        els.btnCancelGenerate.hidden = true;
+        els.promptTextarea.value = '';
+        els.promptTextarea.disabled = true;
+        els.btnExecute.disabled = true;
+        els.btnRegenerate.disabled = true;
+        els.promptStructure.textContent = '';
+        els.promptConstraints.textContent = '';
+        if (els.promptEditStatus) els.promptEditStatus.textContent = '';
+        if (els.promptDraftNotice) els.promptDraftNotice.hidden = true;
+        if (els.assetsPanel) els.assetsPanel.hidden = true;
+        return;
+      }
+
       if (!entry || entry.status === 'loading') {
         const elapsed = entry ? Math.round((Date.now() - entry.startedAt) / 1000) : 0;
         if (entry && entry.stage) {
@@ -9294,7 +9764,7 @@ if (typeof document !== 'undefined') {
         }
         const tag = document.createElement('span');
         tag.className = 'asset-card__tag';
-        tag.textContent = `${ASSET_GROUP_LABELS[group] || group}${item.role ? ` · ${item.role}` : ''}${item.pregen ? ' · generado antes del prompt' : ''}`;
+        tag.textContent = `${ASSET_GROUP_LABELS[group] || group}${item.role ? ` · ${item.role}` : ''}${item.pregen ? (item.type === 'foto' || item.source === 'pexels' || item.source === 'pixabay' ? ' · elegido antes del prompt' : ' · generado antes del prompt') : ''}`;
         li.appendChild(tag);
         if (item.analysis) {
           const an = item.analysis;
@@ -9635,7 +10105,7 @@ if (typeof document !== 'undefined') {
       const crit = resolveProviderForRole('critic', state.provider, state.criticProvider);
       let text = `Generador: ${gen}`;
       if (crit !== state.provider) text += ` · Crítico: ${describeProviderShort(crit)}`;
-      els.providerSummary.textContent = text;
+      if (els.providerSummary) els.providerSummary.textContent = text; // el resumen del Ejecutor se quitó
       updateSetupProviderNotice();
     }
 
@@ -12515,6 +12985,13 @@ if (typeof document !== 'undefined') {
     // acciones que necesitan el HTML/prompt completo lo piden al vuelo con
     // fetchBankEntry (la lista de GET /api/banco es liviana, sólo meta.json).
     const serverBankHandlers = {
+      onCopySeed: (seed) => copyText(seed),
+      onUseSeed: (seed) => {
+        setSsotSeed(seed);
+        goto('contexto');
+        const panel = document.getElementById('ssot-panel');
+        if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      },
       // "Abrir": ve la landing tal cual quedó guardada en disco, en una
       // pestaña nueva y sin origen compartido con esta app (Feature 4). No
       // entra al Estudio: para editar está "Editar", más abajo.
@@ -12582,6 +13059,13 @@ if (typeof document !== 'undefined') {
     // pudo contactar: se navega el respaldo de localStorage tal cual estaba,
     // sin duplicar/eliminar/editar (esas mutaciones requieren disco).
     const legacyBankHandlers = {
+      onCopySeed: (seed) => copyText(seed),
+      onUseSeed: (seed) => {
+        setSsotSeed(seed);
+        goto('contexto');
+        const panel = document.getElementById('ssot-panel');
+        if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      },
       onOpen: (entry) => {
         state.execution = { label: entry.proyecto, promptUsed: entry.prompt, status: 'done', html: entry.html, editorInited: false };
         state.openedFromBank = null; // sin id de servidor: "Guardar en Banco" crea una entrada nueva en disco cuando haya servidor
@@ -12939,6 +13423,182 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Enlace de eventos ---------- */
 
+
+    /* ---------- Limpiar todo: vacía SOLO el trabajo en pantalla ----------
+     * No toca: Banco (disco/servidor), archivos de media/, server/.env,
+     * Configuración (proveedores, claves de media 'lpa_media_keys_v1',
+     * preferencias 'lpa_media_prefs_v1', visión), la cadena SSoT
+     * ('lpa_ssot_seed_v1') ni la disposición de la UI. Tampoco hace ningún
+     * pedido al servidor salvo cancelar lo que estuviera en curso y detener
+     * el servidor de desarrollo de la preview actual (limpieza local).
+     * Claves de localStorage que se BORRAN (datos de trabajo):
+     */
+    const RESET_WORKING_KEYS = [MEDIA_STORAGE_KEY, TECHNIQUES_STORAGE_KEY, CONCEPT_PICK_KEY, PREGEN_KEY, PROMPT_DRAFT_KEY, STUDIO_DRAFT_KEY];
+
+    let toastTimer = null;
+    function showToast(message) {
+      const el = document.getElementById('toast');
+      if (!el) return;
+      el.textContent = message;
+      el.hidden = false;
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.hidden = true; toastTimer = null; }, 6000);
+    }
+
+    async function onResetAllClick() {
+      const action = await showConfirmDialog({
+        title: 'Limpiar todo',
+        message: [
+          'Se va a vaciar lo que está cargado en pantalla para empezar de cero:',
+          '• Setup: campos, descripción, sugerencias de IA y multimedia elegida.',
+          '• Paso 2: verticales, rubro propio, tecnologías, técnicas (vuelven a «todas»), concepto elegido y recursos generados o buscados.',
+          '• Generador: prompts, ediciones, dirección creativa y borradores.',
+          '• Ejecutor y Estudio: ejecución, código, vista previa, versiones, consola y cambios propuestos por la IA. Se cancela lo que esté en curso.',
+          '',
+          'Se conserva: el Banco, los archivos subidos en media/, la Configuración (proveedores y claves), las preferencias de multimedia y la cadena semilla.',
+          'Esta acción no se puede deshacer.',
+        ].join('\n'),
+        actions: [
+          { id: 'reset', label: 'Limpiar todo', variant: 'btn--primary' },
+          { id: 'cancel', label: 'Cancelar', variant: 'btn--secondary', autofocus: true },
+        ],
+      });
+      if (action !== 'reset') return;
+      resetAllWorkingData();
+    }
+
+    function resetAllWorkingData() {
+      state.resetEpoch++;
+
+      // 1) Cancelar lo que esté en curso (rutas de cancelación existentes).
+      if (aiFill.busy) onAiFillCancel();
+      if (conceptPickState.busy) onConceptCancel();
+      if (pregenState.busy && pregenState.llmRunId) cancelOpencodeRun(pregenState.llmRunId);
+      pregenState.epoch++;
+      pregenState.busy = false; pregenState.run = null; pregenState.llmRunId = null;
+      Object.keys(state.modelPrompts).forEach((k) => {
+        const e = state.modelPrompts[k];
+        if (e && e.status === 'loading') { e.cancelRequested = true; cancelOpencodeRun(e.runId); }
+      });
+      const exec = state.execution;
+      if (exec && exec.status === 'loading') onCancelExecute();
+      if (state.aiEditRunId) cancelOpencodeRun(state.aiEditRunId);
+      state.aiEditRunId = null;
+      cancelPostExecPasses();
+      if (exec && exec.project) {
+        const pj = exec.project;
+        pj.launchToken += 1;
+        if (pj.relaunchTimer) { clearTimeout(pj.relaunchTimer); pj.relaunchTimer = null; }
+        if (pj.writeTimer) { clearTimeout(pj.writeTimer); pj.writeTimer = null; }
+        if (pj.previewId) stopProjectPreview(pj.previewId);
+      }
+      [state.previewDebounceTimer, state.promptEditDebounceTimer, state.studioDraftDebounceTimer].forEach((t) => { if (t) clearTimeout(t); });
+      state.previewDebounceTimer = null; state.promptEditDebounceTimer = null; state.studioDraftDebounceTimer = null;
+      mediaPending.forEach((p) => { p.dropped = true; });
+      mediaPending.length = 0;
+
+      // 2) Estado en memoria.
+      state.project = {};
+      state.verticals = [];
+      state.customVertical = '';
+      state.customVerticalOn = false;
+      state.technologies = [];
+      state.techniques = ALL_TECHNIQUE_IDS.slice();
+      state.media = { references: [], required: [] };
+      state.mediaBusy = 0;
+      state.assetsCache = {};
+      state.describeCache = {};
+      state.conceptPick = emptyConceptPick();
+      state.pregen = emptyPregen();
+      state.genEpoch++;
+      state.genTechniques = null;
+      state.postExec = null;
+      state.templateGeneration = null;
+      state.modelPrompts = {};
+      state.activeTab = null;
+      state.edits = {};
+      state.execution = null;
+      state.openedFromBank = null;
+      state.pendingVersions = null;
+      state.versions = [];
+      state.inspecting = false;
+      state.inspectedElement = null;
+      state.aiEditCandidate = null;
+      state.studioBaseline = null;
+      state.draftNoticeTab = null;
+      state.pendingPreviewHtml = '';
+      Object.keys(mediaFrames).forEach((k) => { delete mediaFrames[k]; });
+      Object.keys(mediaPreviews).forEach((k) => {
+        try { if (typeof URL !== 'undefined' && URL.revokeObjectURL) URL.revokeObjectURL(mediaPreviews[k]); } catch (e) { /* no-op */ }
+        delete mediaPreviews[k];
+      });
+
+      // 3) localStorage: sólo datos de trabajo (ver RESET_WORKING_KEYS).
+      RESET_WORKING_KEYS.forEach((k) => safeRemoveItem(k));
+
+      // 4) Paneles y modales auxiliares.
+      Object.assign(conceptPickState, { busy: false, runId: null, cancelled: false, started: 0, status: '', statusError: false, ownOpen: false, editing: -1, ownError: '' });
+      if (conceptPickState.timer) { clearInterval(conceptPickState.timer); conceptPickState.timer = null; }
+      [els.conceptOwnTitle, els.conceptOwnIs, els.conceptOwnNav].forEach((i) => { if (i) i.value = ''; });
+      web.trigger = null;
+      closePregenWeb();
+      Object.assign(web, { items: [], offset: 0, exhausted: false, loading: false, suggesting: false, message: '', selected: new Map(), suggestions: [], error: '', key: '' });
+      web.cache.clear();
+      closePregenLibrary();
+      Object.assign(pregenState, { libItems: [], libSelected: new Set(), libTrigger: null });
+      setPregenProgress('image', '');
+      setPregenProgress('video', '');
+
+      // 5) Setup: formulario, sugerencias IA, errores y dropzones.
+      fillSetupForm({});
+      document.querySelectorAll('.ai-suggestion').forEach((n) => n.remove());
+      setAiFillStatus('', false);
+      refreshAiFillButton();
+      clearSetupErrors();
+      setMediaError('reference', '');
+      setMediaError('required', '');
+      ['media-ref-input', 'media-req-input'].forEach((id) => { const i = document.getElementById(id); if (i) i.value = ''; });
+      if (els.inputVerticalOtro) els.inputVerticalOtro.value = '';
+      if (els.errVerticalOtro) els.errVerticalOtro.textContent = '';
+      if (els.errContexto) els.errContexto.textContent = '';
+      renderMediaLists();
+
+      // 6) Estudio: editor, vista previa, consola, versiones y paneles de IA.
+      if (state.editor) state.editor.setValue('');
+      [state.previewDebounceTimer, state.studioDraftDebounceTimer].forEach((t) => { if (t) clearTimeout(t); });
+      state.previewDebounceTimer = null; state.studioDraftDebounceTimer = null;
+      resetProjectUi();
+      if (els.previewFrame && els.previewFrame.dataset.loaded === 'true') sendHtmlToPreview('');
+      const c = state.consoleLog;
+      c.run = ''; c.inst = null; c.awaiting = false; c.inject = null; c.empty = false; c.lastHint = '';
+      consoleClear(false);
+      if (els.btnInspectToggle) { els.btnInspectToggle.setAttribute('aria-pressed', 'false'); els.btnInspectToggle.classList.remove('is-active'); }
+      if (els.aiEditDiff) els.aiEditDiff.hidden = true;
+      if (els.aiEditFiles) els.aiEditFiles.hidden = true;
+      if (els.aiEditStatus) { els.aiEditStatus.textContent = ''; els.aiEditStatus.classList.remove('status--error'); }
+      if (els.aiInstruction) els.aiInstruction.value = '';
+      if (els.studioDraftNotice) els.studioDraftNotice.hidden = true;
+      if (els.promptCopyStatus) els.promptCopyStatus.textContent = '';
+      resetPostExec();
+      renderPostExecPanel();
+      renderVersions();
+      setStudioView('preview');
+
+      // 7) Re-render de todo (la cadena SSoT se conserva y se vuelve a pintar).
+      renderChipGroups();
+      renderConceptPickPanel();
+      renderPregenPanel();
+      renderGenerador();
+      renderEjecutor();
+      stopGenElapsedTimerIfIdle();
+
+      // 8) Volver al Setup, enfocar el primer campo y avisar.
+      goto('setup');
+      const first = els.formSetup && els.formSetup.elements.descripcion;
+      if (first) first.focus();
+      showToast('Listo: se limpió el proyecto en pantalla (Banco y Configuración intactos)');
+    }
+
     function bindEvents() {
       els.stepButtons.forEach((b) => b.addEventListener('click', () => goto(b.dataset.goto)));
       const mkSave = document.getElementById('mk-save');
@@ -12957,6 +13617,10 @@ if (typeof document !== 'undefined') {
       bindDropzone(document.getElementById('dropzone-ref'), document.getElementById('media-ref-input'), 'reference');
       bindDropzone(document.getElementById('dropzone-req'), document.getElementById('media-req-input'), 'required');
       els.btnLoadExample.addEventListener('click', onLoadExample);
+      ['fab-clear-all'].forEach((id) => {
+        const b = document.getElementById(id);
+        if (b) b.addEventListener('click', onResetAllClick);
+      });
       const aiBtn = document.getElementById('btn-ai-fill');
       if (aiBtn) {
         aiBtn.addEventListener('click', onAiFillClick);
@@ -12980,6 +13644,21 @@ if (typeof document !== 'undefined') {
       if (els.btnPregenVideo) els.btnPregenVideo.addEventListener('click', onPregenVideo);
       if (els.btnPregenImageLib) els.btnPregenImageLib.addEventListener('click', () => openPregenLibrary('image', els.btnPregenImageLib));
       if (els.btnPregenVideoLib) els.btnPregenVideoLib.addEventListener('click', () => openPregenLibrary('video', els.btnPregenVideoLib));
+      if (els.btnPregenImageWeb) els.btnPregenImageWeb.addEventListener('click', () => openPregenWeb('image', els.btnPregenImageWeb));
+      if (els.btnPregenVideoWeb) els.btnPregenVideoWeb.addEventListener('click', () => openPregenWeb('video', els.btnPregenVideoWeb));
+      if (els.pregenWeb) {
+        els.pregenWeb.addEventListener('keydown', onWebKeydown);
+        els.pregenWeb.addEventListener('cancel', (e) => { e.preventDefault(); closePregenWeb(); });
+        els.pregenWeb.addEventListener('click', (e) => { if (e.target === els.pregenWeb) closePregenWeb(); });
+        webBtn('search').addEventListener('click', onWebSearch);
+        webBtn('suggest').addEventListener('click', onWebSuggest);
+        webBtn('more').addEventListener('click', onWebMore);
+        webBtn('new').addEventListener('click', onWebNew);
+        webBtn('add').addEventListener('click', onWebAdd);
+        webBtn('cancel').addEventListener('click', closePregenWeb);
+        webBtn('close').addEventListener('click', closePregenWeb);
+        webEl('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); onWebSearch(); } });
+      }
       if (els.btnPregenLibraryClose) els.btnPregenLibraryClose.addEventListener('click', closePregenLibrary);
       if (els.btnPregenLibraryAdd) els.btnPregenLibraryAdd.addEventListener('click', onPregenLibraryAdd);
       if (els.pregenLibrary) {
@@ -13003,7 +13682,7 @@ if (typeof document !== 'undefined') {
       els.btnCancelGenerate.addEventListener('click', onCancelGenerate);
       els.btnExecute.addEventListener('click', onExecuteClick);
 
-      els.btnProviderConfig.addEventListener('click', openConfigView);
+      if (els.btnProviderConfig) els.btnProviderConfig.addEventListener('click', openConfigView); // el atajo del Ejecutor se quitó; queda por si vuelve
       if (els.setupProviderNoticeBtn) els.setupProviderNoticeBtn.addEventListener('click', openConfigView);
       bindProviderForm(els.genForm, () => state.provider);
       bindProviderForm(els.criticForm, () => state.criticProvider);
