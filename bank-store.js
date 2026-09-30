@@ -21,6 +21,46 @@ const crypto = require('crypto');
 const { validateProject, normalizeProjectPath } = require('./preview-runner.js');
 
 const MAX_VERSIONS = 20;
+// Proyectos multi-archivo: snapshots del mapa de archivos (mismo tope que el Estudio).
+const MAX_PROJECT_VERSIONS = 10;
+// Historial del chat "Cambios IA" (meta.aiHistory): sólo resúmenes, tope fijo.
+const AI_HISTORY_MAX = 100;
+const AI_HISTORY_ROLES = new Set(['user', 'assistant', 'system']);
+const AI_HISTORY_STATUS = new Set(['aplicado', 'descartado', 'pendiente', 'error']);
+
+// Sanea el historial de cambios IA que llega del cliente: sólo campos
+// conocidos, textos acotados y como mucho AI_HISTORY_MAX entradas (las más
+// recientes). Los diffs completos NO se guardan: se recalculan desde las
+// versiones (versionId) cuando hace falta.
+function cleanAiHistory(list) {
+  if (!Array.isArray(list)) return [];
+  const clip = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const int = (v) => (Number.isFinite(v) && v > 0 ? Math.min(Math.round(v), 1e7) : 0);
+  return list
+    .filter((e) => e && typeof e === 'object' && AI_HISTORY_ROLES.has(e.role))
+    .slice(-AI_HISTORY_MAX)
+    .map((e, i) => {
+      const out = {
+        id: clip(e.id, 40) || `h${Date.now().toString(36)}${i}`,
+        role: e.role,
+        text: clip(e.text, 2000),
+        ts: Number.isFinite(e.ts) ? e.ts : Date.now(),
+      };
+      if (typeof e.scope === 'string' && e.scope) out.scope = clip(e.scope, 20);
+      if (AI_HISTORY_STATUS.has(e.status)) out.status = e.status;
+      if (typeof e.versionId === 'string' && e.versionId) out.versionId = clip(e.versionId, 60);
+      const d = e.diffSummary;
+      if (d && typeof d === 'object') {
+        out.diffSummary = {
+          added: int(d.added), removed: int(d.removed), approximate: !!d.approximate,
+          files: (Array.isArray(d.files) ? d.files : []).slice(0, 30).map((f) => ({
+            path: clip(f && f.path, 200), added: int(f && f.added), removed: int(f && f.removed), isNew: !!(f && f.isNew),
+          })),
+        };
+      }
+      return out;
+    });
+}
 
 const STYLE_LINK_TAG = '<link rel="stylesheet" href="./styles.css">';
 const SCRIPT_SRC_TAG = '<script src="./script.js"></script>';
@@ -363,6 +403,74 @@ function makeBankStore(bancoDir, storeOpts) {
     return meta;
   }
 
+  // Versiones de proyectos multi-archivo: project-versions/v<N>.json. Se
+  // guarda compacto: la más vieja completa ({base:true, files}) y cada una
+  // más nueva sólo con lo que cambió respecto de la anterior
+  // ({changed, removed}); get() reconstruye los mapas completos.
+  function cleanFilesMap(files) {
+    const out = {};
+    Object.keys(files || {}).forEach((rel) => {
+      if (typeof files[rel] !== 'string') return;
+      try { out[normalizeProjectPath(rel)] = files[rel]; } catch (e) { /* ruta inválida: se omite */ }
+    });
+    return out;
+  }
+
+  function writeProjectVersions(id, versions) {
+    const dir = path.join(dirFor(id), 'project-versions');
+    fs.rmSync(dir, { recursive: true, force: true });
+    const capped = (Array.isArray(versions) ? versions : [])
+      .filter((v) => v && v.files && typeof v.files === 'object')
+      .slice(0, MAX_PROJECT_VERSIONS);
+    if (!capped.length) return [];
+    fs.mkdirSync(dir, { recursive: true });
+    const maps = capped.map((v) => cleanFilesMap(v.files));
+    return capped.map((v, i) => {
+      const files = maps[i];
+      const older = maps[i + 1];
+      let payload;
+      if (!older) payload = { base: true, files };
+      else {
+        const changed = {};
+        const removed = [];
+        Object.keys(files).forEach((p) => { if (older[p] !== files[p]) changed[p] = files[p]; });
+        Object.keys(older).forEach((p) => { if (!Object.prototype.hasOwnProperty.call(files, p)) removed.push(p); });
+        payload = { base: false, changed, removed };
+      }
+      const file = `project-versions/v${i + 1}.json`;
+      writeFileAtomic(path.join(dirFor(id), file), JSON.stringify(payload));
+      return {
+        id: v.id || `v${i + 1}`,
+        source: v.source || 'generado',
+        instruction: v.instruction || undefined,
+        date: v.date || new Date().toISOString(),
+        file,
+        fileCount: Object.keys(files).length,
+      };
+    });
+  }
+
+  function readProjectVersions(id, versionsMeta) {
+    const list = Array.isArray(versionsMeta) ? versionsMeta : [];
+    const out = new Array(list.length).fill(null);
+    let prev = null;
+    for (let i = list.length - 1; i >= 0; i--) {
+      let payload = null;
+      try { payload = JSON.parse(fs.readFileSync(path.join(dirFor(id), list[i].file), 'utf8')); } catch (e) { payload = null; }
+      let files = null;
+      if (payload && payload.base && payload.files) files = payload.files;
+      else if (payload && prev) {
+        files = Object.assign({}, prev, payload.changed || {});
+        (payload.removed || []).forEach((p) => { delete files[p]; });
+      }
+      if (!files) { prev = null; continue; } // snapshot ilegible: se omite él y los que dependen de él
+      prev = files;
+      const v = list[i];
+      out[i] = { id: v.id, source: v.source, instruction: v.instruction, date: v.date, file: v.file, files };
+    }
+    return out.filter(Boolean);
+  }
+
   function writeEntryFiles(id, { indexHtml, css, js, split }) {
     const dir = dirFor(id);
     writeFileAtomic(path.join(dir, 'index.html'), indexHtml);
@@ -434,7 +542,7 @@ function makeBankStore(bancoDir, storeOpts) {
     if (meta.multiFile) {
       // Proyecto multi-archivo: `files` es la fuente de verdad; `html` queda
       // vacío (index.html es sólo la tarjeta de miniatura).
-      return { meta, prompt, html: '', files: readProjectFiles(id), versions: [] };
+      return { meta, prompt, html: '', files: readProjectFiles(id), versions: readProjectVersions(id, meta.versions) };
     }
     const html = absolutizeAssets(id, reassembleCanonicalHtml(indexHtml, css, js, meta.split));
     const versionsOut = readVersionsWithHtml(id, meta.versions).map((v) => Object.assign(v, { html: absolutizeAssets(id, v.html) }));
@@ -460,7 +568,7 @@ function makeBankStore(bancoDir, storeOpts) {
     return typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
   }
 
-  function create({ project, verticals, customVertical, technologies, techniques, prompt, html, model, provider, versions, files, technology, ssotSeed, concept }) {
+  function create({ project, verticals, customVertical, technologies, techniques, prompt, html, model, provider, versions, files, technology, ssotSeed, concept, aiHistory }) {
     const tema = (project && project.tema) || 'Proyecto sin nombre';
     const isMulti = !!(files && typeof files === 'object' && Object.keys(files).length);
     // Valida ANTES de crear la carpeta: un proyecto inválido no deja basura.
@@ -484,7 +592,7 @@ function makeBankStore(bancoDir, storeOpts) {
     writeEntryFiles(id, { indexHtml, css, js, split });
     writeFileAtomic(path.join(dirFor(id), 'prompt.md'), String(prompt || ''));
     const now = new Date().toISOString();
-    const versionsMeta = writeVersions(id, isMulti ? [] : versionsIn);
+    const versionsMeta = isMulti ? writeProjectVersions(id, versionsIn) : writeVersions(id, versionsIn);
     const meta = {
       id, tema, proyecto: project || {}, verticals: verticals || [], customVertical: cleanCustomVertical(customVertical), technologies: technologies || [],
       techniques: Array.isArray(techniques) ? techniques.filter((n) => Number.isInteger(n)) : [],
@@ -495,6 +603,7 @@ function makeBankStore(bancoDir, storeOpts) {
       createdAt: now, updatedAt: now,
       split, versions: versionsMeta,
     };
+    if (aiHistory !== undefined) meta.aiHistory = cleanAiHistory(aiHistory);
     if (isMulti) {
       meta.multiFile = true;
       meta.technology = technology;
@@ -504,7 +613,7 @@ function makeBankStore(bancoDir, storeOpts) {
     return get(id);
   }
 
-  function update(id, { html, versions, files, techniques, ssotSeed, customVertical }) {
+  function update(id, { html, versions, files, techniques, ssotSeed, customVertical, aiHistory }) {
     if (!isValidId(id) || !fs.existsSync(metaPathFor(id))) return null;
     const meta = readMeta(id);
     if (meta.multiFile) {
@@ -529,9 +638,10 @@ function makeBankStore(bancoDir, storeOpts) {
     if (Array.isArray(techniques)) meta.techniques = techniques.filter((n) => Number.isInteger(n));
     if (ssotSeed !== undefined) meta.ssotSeed = cleanSsotSeed(ssotSeed);
     if (customVertical !== undefined) meta.customVertical = cleanCustomVertical(customVertical);
-    if (versions !== undefined && !meta.multiFile) {
-      meta.versions = writeVersions(id, versions);
+    if (versions !== undefined) {
+      meta.versions = meta.multiFile ? writeProjectVersions(id, versions) : writeVersions(id, versions);
     }
+    if (aiHistory !== undefined) meta.aiHistory = cleanAiHistory(aiHistory);
     meta.updatedAt = new Date().toISOString();
     writeFileAtomic(metaPathFor(id), JSON.stringify(meta, null, 2));
     return get(id);
@@ -558,7 +668,7 @@ function makeBankStore(bancoDir, storeOpts) {
     writeFileAtomic(path.join(dirFor(newId), 'prompt.md'), original.prompt);
     const now = new Date().toISOString();
     // original.versions ya trae el html leído (get() usa readVersionsWithHtml).
-    const versionsMeta = writeVersions(newId, versionsIn);
+    const versionsMeta = original.meta.multiFile ? writeProjectVersions(newId, versionsIn) : writeVersions(newId, versionsIn);
     const meta = Object.assign({}, original.meta, {
       id: newId, tema: `${original.meta.tema} (copia)`,
       proyecto: Object.assign({}, original.meta.proyecto, { tema: `${original.meta.tema} (copia)` }),
@@ -582,5 +692,5 @@ function makeBankStore(bancoDir, storeOpts) {
 module.exports = {
   slugify, makeId, isValidId, ID_RE,
   splitHtmlDocument, reassembleCanonicalHtml,
-  writeFileAtomic, makeBankStore, MAX_VERSIONS,
+  writeFileAtomic, makeBankStore, MAX_VERSIONS, MAX_PROJECT_VERSIONS, AI_HISTORY_MAX, cleanAiHistory,
 };

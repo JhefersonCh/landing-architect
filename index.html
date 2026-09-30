@@ -564,12 +564,19 @@
               <p class="preview__stopped-text">Servidor detenido</p>
               <button type="button" id="btn-preview-start" class="btn btn--primary">Iniciar</button>
             </div>
-            <button type="button" id="btn-console-toggle" class="console-fab" aria-haspopup="dialog" aria-expanded="false" aria-controls="console-modal" hidden>
-              <span class="console-fab__icon" aria-hidden="true">&gt;_</span>
-              <span class="console-fab__label">Consola</span>
-              <span class="console-badge console-badge--error" id="console-badge-errors" hidden>0</span>
-              <span class="console-badge console-badge--warn" id="console-badge-warns" hidden>0</span>
-            </button>
+            <div class="fab-row">
+              <button type="button" id="btn-console-toggle" class="console-fab" aria-haspopup="dialog" aria-expanded="false" aria-controls="console-modal" hidden>
+                <span class="console-fab__icon" aria-hidden="true">&gt;_</span>
+                <span class="console-fab__label">Consola</span>
+                <span class="console-badge console-badge--error" id="console-badge-errors" hidden>0</span>
+                <span class="console-badge console-badge--warn" id="console-badge-warns" hidden>0</span>
+              </button>
+              <button type="button" id="btn-aichat-toggle" class="console-fab" aria-haspopup="dialog" aria-expanded="false" aria-controls="aichat-modal" hidden>
+                <span class="console-fab__icon" aria-hidden="true">&#10022;</span>
+                <span class="console-fab__label">Cambios IA</span>
+                <span class="console-badge ai-badge" id="aichat-count" hidden>0</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -593,6 +600,10 @@
         <div class="ai-edit__diff" id="ai-edit-diff" hidden>
           <p id="ai-edit-diff-summary"></p>
           <ul id="ai-edit-files" class="ai-edit__files" hidden></ul>
+          <details id="ai-edit-changes" class="udiff-details" hidden>
+            <summary>Ver cambios</summary>
+            <div id="ai-edit-changes-body" class="udiff-body"></div>
+          </details>
           <div class="view__actions">
             <button type="button" id="btn-ai-edit-accept" class="btn btn--primary">Aceptar</button>
             <button type="button" id="btn-ai-edit-discard" class="btn btn--secondary">Descartar</button>
@@ -916,6 +927,29 @@
   <ol class="cmodal__list console__list" id="console-list" role="log" aria-live="off" aria-label="Mensajes de la consola de la página generada" tabindex="0"></ol>
   <ol class="cmodal__list console__list" id="console-server-list" role="log" aria-live="off" aria-label="Salida del servidor de desarrollo" tabindex="0" hidden></ol>
   <div class="cmodal__resize" id="console-resize" role="separator" aria-orientation="horizontal" aria-label="Redimensionar la consola (flechas)" tabindex="0"></div>
+</section>
+
+<section class="cmodal aichat" id="aichat-modal" role="dialog" aria-modal="false" aria-labelledby="aichat-title" tabindex="-1" hidden>
+  <header class="cmodal__header" id="aichat-header">
+    <h3 class="cmodal__title" id="aichat-title">Cambios IA</h3>
+    <span class="cmodal__spacer"></span>
+    <button type="button" id="btn-aichat-close" class="cmodal__close" aria-label="Cerrar el historial de cambios IA">&times;</button>
+  </header>
+  <ol class="aichat__list" id="aichat-list" role="log" aria-live="polite" aria-label="Conversación de cambios pedidos a la IA" tabindex="0"></ol>
+  <p class="aichat__status" id="aichat-status" role="status"></p>
+  <form class="aichat__composer" id="aichat-form" autocomplete="off">
+    <label class="aichat__sr" for="aichat-input">Pedile un cambio a la IA</label>
+    <textarea id="aichat-input" class="aichat__input" rows="2" placeholder="Pedile un cambio a la IA (Ctrl/Cmd+Enter para enviar)"></textarea>
+    <div class="aichat__row">
+      <label class="aichat__sr" for="aichat-scope">Alcance</label>
+      <select id="aichat-scope" class="aichat__scope">
+        <option value="document">Documento completo</option>
+        <option value="selection">Selección</option>
+      </select>
+      <button type="submit" id="btn-aichat-send" class="cmodal__btn cmodal__btn--accent">Enviar</button>
+    </div>
+  </form>
+  <div class="cmodal__resize" id="aichat-resize" role="separator" aria-orientation="horizontal" aria-label="Redimensionar el historial de cambios IA (flechas)" tabindex="0"></div>
 </section>
 
 <script src="console-capture.js"></script>

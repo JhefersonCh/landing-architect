@@ -5669,7 +5669,7 @@ async function runOpencodeLocal(providerConfig, promptText) {
 async function runPrompt(providerConfig, promptText, opts) {
   const expect = (opts && opts.expect) || 'html';
   if (!providerConfig || !providerConfig.type) {
-    return { ok: false, error: 'No hay un proveedor configurado. Configurá uno en "Configuración".' };
+    return { ok: false, unconfigured: true, error: 'No hay un proveedor configurado. Configurá uno en "Configuración".' };
   }
   if (typeof fetch !== 'function') {
     return { ok: false, error: 'Este entorno no tiene disponible `fetch` para ejecutar el prompt.' };
@@ -5694,7 +5694,7 @@ async function runPrompt(providerConfig, promptText, opts) {
   const useProxy = hasLocation && (location.protocol === 'http:' || location.protocol === 'https:');
 
   const request = buildProviderRequest(providerConfig, promptText);
-  if (request.error) return { ok: false, error: request.error };
+  if (request.error) return { ok: false, unconfigured: true, error: request.error }; // faltan datos (clave/URL): OpenCode puede cubrir
 
   const wantStream = !!(opts && opts.stream) && !(opts && opts.noStream);
   const signal = (opts && opts.signal) || undefined;
@@ -5736,7 +5736,7 @@ async function runPrompt(providerConfig, promptText, opts) {
       }
       let detail = t;
       try { detail = JSON.stringify(JSON.parse(t)); } catch (e) { /* no era JSON, se usa el texto tal cual */ }
-      return { ok: false, error: `Error del proveedor (${res.status}): ${detail || 'sin detalle'}` };
+      return { ok: false, status: res.status, transient: res.status >= 500 || res.status === 429, error: `Error del proveedor (${res.status}): ${detail || 'sin detalle'}` };
     }
 
     let raw;
@@ -5766,6 +5766,9 @@ async function runPrompt(providerConfig, promptText, opts) {
         return { ok: false, error: 'El modelo cortó la respuesta por límite de tokens antes de terminar los archivos del proyecto. Probá de nuevo o usá un modelo con más salida.' };
       }
       const filesText = extractProjectFilesText(raw);
+      // "SIN CAMBIOS" es una respuesta válida del protocolo de edición (la IA
+      // considera que no hay nada que cambiar): no es un error de formato.
+      if (!filesText && /^\s*SIN CAMBIOS\.?\s*$/i.test(String(raw || ''))) return { ok: true, text: 'SIN CAMBIOS', model: providerConfig.model };
       if (!filesText) {
         // Respaldo: el modelo devolvió un HTML único en vez del proyecto.
         const fallbackHtml = extractHtml(raw);
@@ -5787,10 +5790,11 @@ async function runPrompt(providerConfig, promptText, opts) {
     if (e && e.name === 'TypeError') {
       return {
         ok: false,
+        transient: true,
         error: 'No se pudo conectar con el proveedor (posible bloqueo de CORS del navegador). Si abriste la app con file://, iniciá `node server.js` y entrá a http://localhost:3000: las llamadas se enrutan a través de un proxy local que evita el bloqueo.',
       };
     }
-    return { ok: false, error: 'No se pudo conectar con el proveedor. Verificá la clave, la URL y tu conexión.' };
+    return { ok: false, transient: true, error: 'No se pudo conectar con el proveedor. Verificá la clave, la URL y tu conexión.' };
   }
 }
 
@@ -5878,6 +5882,118 @@ function diffLines(oldText, newText) {
   while (j < m) { ops.push({ type: 'add', line: b[j] }); added++; j++; }
 
   return { added, removed, approximate: false, ops };
+}
+
+// Diff unificado (estilo `git diff`) entre dos textos: hunks con `context`
+// líneas de contexto (3 por defecto), numeración vieja/nueva y hunks
+// contiguos fusionados cuando el hueco entre cambios es <= 2*context.
+// Devuelve { added, removed, approximate, identical, hunks:[{oldStart,
+// oldLines,newStart,newLines,lines:[{type:'equal'|'add'|'remove',text,oldNo,newNo}]}] }.
+// Con documentos enormes (LCS fuera de rango) `approximate` es true y no hay hunks.
+function buildUnifiedDiff(oldText, newText, opts) {
+  const ctx = Math.max(0, opts && Number.isFinite(opts.context) ? Math.floor(opts.context) : 3);
+  const oldS = String(oldText == null ? '' : oldText);
+  const newS = String(newText == null ? '' : newText);
+  let ops;
+  let added = 0;
+  let removed = 0;
+  if (oldS === newS) return { added: 0, removed: 0, approximate: false, identical: true, hunks: [] };
+  if (oldS === '' || newS === '') { // archivo nuevo / vaciado: sin línea fantasma de split('')
+    const type = oldS === '' ? 'add' : 'remove';
+    ops = (oldS === '' ? newS : oldS).split('\n').map((line) => ({ type, line }));
+    if (type === 'add') added = ops.length; else removed = ops.length;
+  } else {
+    const d = diffLines(oldS, newS);
+    if (d.approximate) return { added: d.added, removed: d.removed, approximate: true, identical: false, hunks: [] };
+    ops = d.ops; added = d.added; removed = d.removed;
+  }
+  let o = 1;
+  let n = 1;
+  const rows = ops.map((op) => {
+    const r = { type: op.type, text: op.line, oldNo: null, newNo: null };
+    if (op.type !== 'add') r.oldNo = o++;
+    if (op.type !== 'remove') r.newNo = n++;
+    return r;
+  });
+  const hunks = [];
+  let i = 0;
+  while (i < rows.length) {
+    while (i < rows.length && rows[i].type === 'equal') i++;
+    if (i >= rows.length) break;
+    const start = Math.max(0, i - ctx);
+    let last = i;
+    let j = i;
+    while (j < rows.length) {
+      if (rows[j].type !== 'equal') { last = j; j++; continue; }
+      let k = j;
+      while (k < rows.length && rows[k].type === 'equal') k++;
+      if (k >= rows.length || k - j > 2 * ctx) break;
+      j = k;
+    }
+    const stop = Math.min(rows.length, last + 1 + ctx);
+    const lines = rows.slice(start, stop);
+    const olds = lines.filter((r) => r.oldNo != null);
+    const news = lines.filter((r) => r.newNo != null);
+    hunks.push({
+      oldStart: olds.length ? olds[0].oldNo : 0, oldLines: olds.length,
+      newStart: news.length ? news[0].newNo : 0, newLines: news.length,
+      lines,
+    });
+    i = stop;
+  }
+  return { added, removed, approximate: false, identical: false, hunks };
+}
+
+// Lista de archivos {path, old, content, isNew} -> diffs unificados por archivo
+// (omite los idénticos). Sirve tanto para HTML único (un solo "archivo") como
+// para proyectos multi-archivo.
+function buildFilesUnifiedDiff(files, opts) {
+  return (files || []).map((f) => {
+    const d = buildUnifiedDiff(f.old || '', f.content, opts);
+    return { path: f.path, isNew: !!f.isNew, added: d.added, removed: d.removed, approximate: d.approximate, identical: d.identical, hunks: d.hunks };
+  }).filter((f) => !f.identical);
+}
+
+// Resumen compacto (lo que sí se persiste en el Banco) de una lista de archivos cambiados.
+function summarizeAiDiff(files) {
+  const list = (files || []).map((f) => {
+    const d = diffLines(f.old || '', f.content);
+    return { path: f.path, added: d.added, removed: d.removed, isNew: !!f.isNew, approximate: !!d.approximate };
+  });
+  return {
+    files: list.map(({ path, added, removed, isNew }) => ({ path, added, removed, isNew })),
+    added: list.reduce((a, f) => a + f.added, 0), removed: list.reduce((a, f) => a + f.removed, 0),
+    approximate: list.some((f) => f.approximate),
+  };
+}
+
+const AI_HISTORY_MAX = 100;
+const AI_HISTORY_STATUS = ['aplicado', 'descartado', 'pendiente', 'error'];
+
+// Normaliza el historial del chat "Cambios IA" (viene del Banco / se manda al
+// Banco): tope de entradas, campos conocidos, textos acotados. Una entrada
+// "pendiente" no tiene candidato tras recargar, así que queda "descartado".
+function normalizeAiHistory(list, opts) {
+  if (!Array.isArray(list)) return [];
+  const clip = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const keepPending = !!(opts && opts.keepPending);
+  return list
+    .filter((e) => e && typeof e === 'object' && ['user', 'assistant', 'system'].indexOf(e.role) !== -1)
+    .slice(-AI_HISTORY_MAX)
+    .map((e, i) => {
+      const out = { id: clip(e.id, 40) || `h${i}`, role: e.role, text: clip(e.text, 2000), ts: Number.isFinite(e.ts) ? e.ts : Date.now() };
+      if (typeof e.scope === 'string' && e.scope) out.scope = clip(e.scope, 20);
+      if (AI_HISTORY_STATUS.indexOf(e.status) !== -1) out.status = (e.status === 'pendiente' && !keepPending) ? 'descartado' : e.status;
+      if (typeof e.versionId === 'string' && e.versionId) out.versionId = clip(e.versionId, 60);
+      if (e.diffSummary && typeof e.diffSummary === 'object') {
+        const d = e.diffSummary;
+        out.diffSummary = {
+          added: Number(d.added) || 0, removed: Number(d.removed) || 0, approximate: !!d.approximate,
+          files: (Array.isArray(d.files) ? d.files : []).slice(0, 30).map((f) => ({ path: clip(f && f.path, 200), added: Number(f && f.added) || 0, removed: Number(f && f.removed) || 0, isNew: !!(f && f.isNew) })),
+        };
+      }
+      return out;
+    });
 }
 
 // Click-to-code: dado el snapshot del DOM clickeado en la preview (tag, id,
@@ -6730,7 +6846,7 @@ if (typeof module !== 'undefined' && module.exports) {
     CRITIC_MAX_ROUNDS, parseSuggestionList,
     compactHtmlForReview, buildCriticAuditPrompt, parseCriticItems, buildCriticApplyInstruction,
     buildHumanRewritePrompt, countHtmlTags, verifyRewriteStructure,
-    buildEditPrompt, diffLines, locateInSource, injectInspector,
+    buildEditPrompt, diffLines, buildUnifiedDiff, buildFilesUnifiedDiff, summarizeAiDiff, normalizeAiHistory, AI_HISTORY_MAX, locateInSource, injectInspector,
     buildConsoleScript, injectConsoleCapture, injectConsoleCaptureInfo, mapConsoleLocation, isTrustedConsoleMessage, normalizeConsoleEntry,
     resolveConsoleSource, lineRangeOf, extractCodeExcerpt, consoleCounts, formatConsoleEntryText, buildConsoleFixInstruction,
     formatConsoleClock, groupConsoleEntries, consoleMatchesSearch, classifyServerLine, stripConsoleAnsi,
@@ -6795,6 +6911,8 @@ if (typeof document !== 'undefined') {
       promptEditDebounceTimer: null,
       studioDraftDebounceTimer: null,
       studioView: 'preview',     // "preview" | "code": qué panel del Estudio se ve cuando no está Dividido
+      aiHistory: [],             // chat "Cambios IA": [{id, role, text, scope, status, diffSummary, versionId, ts}] (tope 100; se guarda en el Banco)
+      aiChat: { open: false, rect: null, lastFocus: null, busy: false, openDiffs: new Set() },
       consoleModal: {            // modal flotante de la Consola (Navegador / Servidor)
         open: false, view: 'browser', search: '', autoScroll: true, rect: null, lastFocus: null,
         pollTimer: null, polling: false, pollMs: 1000, pulseTimer: null,
@@ -6933,6 +7051,19 @@ if (typeof document !== 'undefined') {
       els.consoleSearch = document.getElementById('console-search');
       els.consoleResize = document.getElementById('console-resize');
       els.btnConsoleToggle = document.getElementById('btn-console-toggle');
+      els.btnAiChatToggle = document.getElementById('btn-aichat-toggle');
+      els.aichatCount = document.getElementById('aichat-count');
+      els.aichatModal = document.getElementById('aichat-modal');
+      els.aichatHeader = document.getElementById('aichat-header');
+      els.aichatResize = document.getElementById('aichat-resize');
+      els.aichatList = document.getElementById('aichat-list');
+      els.aichatStatus = document.getElementById('aichat-status');
+      els.aichatForm = document.getElementById('aichat-form');
+      els.aichatInput = document.getElementById('aichat-input');
+      els.aichatScope = document.getElementById('aichat-scope');
+      els.btnAiChatSend = document.getElementById('btn-aichat-send');
+      els.btnAiChatClose = document.getElementById('btn-aichat-close');
+      els.aiEditChanges = document.getElementById('ai-edit-changes');
       els.btnConsoleClose = document.getElementById('btn-console-close');
       els.btnConsoleAutoscroll = document.getElementById('btn-console-autoscroll');
       els.btnServerStop = document.getElementById('btn-server-stop');
@@ -7070,6 +7201,13 @@ if (typeof document !== 'undefined') {
       const external = await runPrompt(cfg, prompt, { expect });
       if (external.ok) {
         return Object.assign({}, external, { attempts: [{ model: cfg.model, status: 'ok' }] });
+      }
+      // Respaldo a OpenCode SOLO ante fallas transitorias (red, 5xx, 429) o si
+      // el proveedor no está configurado (OpenCode gratis como default). Si
+      // el proveedor respondió pero la respuesta no sirve (formato, límite de
+      // tokens, 4xx), se informa enseguida: el respaldo gratis tarda minutos.
+      if ((!external.transient && !external.unconfigured) || external.cancelled) {
+        return Object.assign({}, external, { attempts: [{ model: cfg.model, status: 'error', error: external.error }] });
       }
       const fallback = await runOpencodeComplete({ prompt, model: OPENCODE_META_MODEL_FALLBACK, expect, runId });
       const attempts = [{ model: cfg.model, status: 'error', error: external.error }].concat(fallback.attempts || []);
@@ -10087,6 +10225,7 @@ if (typeof document !== 'undefined') {
       };
       state.openedFromBank = null;
       state.pendingVersions = null;
+      setAiHistory([]);
       renderEjecutor();
       goto('ejecutor');
       executeCurrent();
@@ -10272,8 +10411,9 @@ if (typeof document !== 'undefined') {
       refreshEditor();
     }
 
-    function initEditorForProject(exec) {
+    function initEditorForProject(exec, opts) {
       const pj = exec.project;
+      const restored = opts && Array.isArray(opts.versions) ? opts.versions.filter((v) => v && v.files && typeof v.files === 'object') : [];
       const value = pj.files[pj.current] || '';
       if (!state.editor) {
         state.editor = createEditor(els.editorContainer, { value, onChange: onEditorChange });
@@ -10283,7 +10423,8 @@ if (typeof document !== 'undefined') {
       if (state.editor.setMode) state.editor.setMode(modeForPath(pj.current));
       state.studioBaseline = value;
       // Versiones de proyecto = snapshots del mapa de archivos (tope 10).
-      state.versions = pushProjectVersion([], pj.files, { source: 'generado' });
+      // Si vienen del Banco (Editar) se restauran todas; si no, arranca con una sola.
+      state.versions = restored.length ? restored.slice(0, PROJECT_VERSION_CAP) : pushProjectVersion([], pj.files, { source: 'generado' });
       renderVersions();
       renderProjectFileSelect(pj);
       showPreviewFrame('project');
@@ -10440,7 +10581,8 @@ if (typeof document !== 'undefined') {
         editorInited: false, project, ssotSeed: full.meta.ssotSeed || null,
       };
       state.openedFromBank = full.meta.id;
-      state.pendingVersions = null;
+      state.pendingVersions = (full.versions && full.versions.length) ? full.versions : null;
+      setAiHistory(normalizeAiHistory(full.meta.aiHistory));
       goto('ejecutor');
       renderEjecutor();
       launchProjectPreview(state.execution);
@@ -10502,9 +10644,11 @@ if (typeof document !== 'undefined') {
 
     function addProjectVersion(partial) {
       const pj = state.execution && state.execution.project;
-      if (!pj) return;
+      if (!pj) return null;
       state.versions = pushProjectVersion(state.versions, pj.files, partial);
       renderVersions();
+      scheduleBankVersionSync();
+      return state.versions[0];
     }
 
     // Aplica cambios {path,content,old,isNew} al proyecto: escribe cada archivo
@@ -10589,6 +10733,7 @@ if (typeof document !== 'undefined') {
         });
         els.aiEditFiles.hidden = !diff.files.length;
       }
+      showCandidateChanges(candidate.changes);
       els.aiEditDiff.hidden = false;
     }
 
@@ -10623,9 +10768,12 @@ if (typeof document !== 'undefined') {
       state.aiEditRunId = runId;
       els.btnAiEdit.disabled = true;
       els.btnCancelAiEdit.hidden = false;
+      syncAiChatBusy();
       els.aiEditStatus.classList.remove('status--error');
       const startedAt = Date.now();
       els.aiEditStatus.textContent = 'Aplicando el cambio con IA… 0s';
+      logAiRequest(instruction, 'project', tag);
+      const failLogged = (msg) => { aiHistAdd({ role: 'assistant', status: 'error', text: msg, scope: 'project' }); return fail(msg); };
       const timer = setInterval(() => { els.aiEditStatus.textContent = `Aplicando el cambio con IA… ${Math.round((Date.now() - startedAt) / 1000)}s`; }, 1000);
       let result;
       try { result = await runLLM({ prompt: editPrompt, expect: 'files', runId }); } finally {
@@ -10633,17 +10781,20 @@ if (typeof document !== 'undefined') {
         els.btnCancelAiEdit.hidden = true;
         els.btnAiEdit.disabled = false;
         state.aiEditRunId = null;
+        syncAiChatBusy();
       }
       if (state.execution !== exec || exec.project !== pj) return { ok: false, error: 'La ejecución cambió mientras la IA respondía.' };
-      if (!result.ok) return fail(result.error || 'La IA no respondió.');
+      if (!result.ok) return failLogged(result.error || 'La IA no respondió.');
       const text = result.text || result.html || '';
-      if (/^\s*SIN CAMBIOS\.?\s*$/i.test(text)) return fail('La IA respondió que no hay nada que cambiar.');
+      if (/^\s*SIN CAMBIOS\.?\s*$/i.test(text)) return failLogged('La IA respondió que no hay nada que cambiar.');
       const parsed = parseProjectEditResponse(text, pj.files, { technology: pj.technology, blockedPaths: projectViewBlockedPaths(view) });
       if (!parsed.changes.length) {
         const why = parsed.rejected.length ? ` Descartados: ${parsed.rejected.map((r) => `${r.path} (${r.reason})`).join('; ')}.` : '';
-        return fail(`${parsed.parsed ? 'La IA no propuso cambios aplicables.' : 'La IA no devolvió archivos en el formato `=== FILE: ruta ===`.'}${why}`);
+        return failLogged(`${parsed.parsed ? 'La IA no propuso cambios aplicables.' : 'La IA no devolvió archivos en el formato `=== FILE: ruta ===`.'}${why}`);
       }
+      supersedeAiCandidate();
       state.aiEditCandidate = { project: true, changes: parsed.changes, instruction, tag: tag || '' };
+      state.aiEditCandidate.historyId = logAiCandidate(parsed.changes, 'project');
       const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
       els.aiEditStatus.textContent = `Cambio listo (modelo ${result.model}, ${elapsedS}s). Revisá el diff por archivo y elegí Aceptar o Descartar.`
         + (parsed.rejected.length ? ` Se descartaron: ${parsed.rejected.map((r) => `${r.path} (${r.reason})`).join('; ')}.` : '');
@@ -10662,9 +10813,15 @@ if (typeof document !== 'undefined') {
       state.aiEditCandidate = null;
       els.aiEditDiff.hidden = true;
       if (els.aiEditFiles) els.aiEditFiles.hidden = true;
+      let projVersion = null;
       if (res.applied.length) {
         els.aiInstruction.value = '';
-        addProjectVersion({ source: 'ia', instruction: cand.instruction });
+        projVersion = addProjectVersion({ source: 'ia', instruction: cand.instruction });
+      }
+      if (cand.historyId) {
+        aiHistPatch(cand.historyId, res.applied.length
+          ? { status: 'aplicado', versionId: projVersion ? projVersion.id : undefined }
+          : { status: 'error', text: describeProjectApply(res) });
       }
       els.aiEditStatus.textContent = describeProjectApply(res) + (res.applied.length ? ' Guardado como nueva versión.' : '');
       els.aiEditStatus.classList.toggle('status--error', !res.applied.length || res.failed.length > 0);
@@ -10804,17 +10961,22 @@ if (typeof document !== 'undefined') {
         btn.type = 'button';
         btn.className = 'btn btn--secondary';
         btn.textContent = 'Restaurar';
-        btn.addEventListener('click', () => {
-          if (v.files) { restoreProjectVersion(v); return; }
-          if (!state.editor) return;
-          state.editor.setValue(v.html);
-          if (state.execution) state.execution.html = v.html;
-          state.studioBaseline = v.html;
-          schedulePreviewUpdate();
-        });
+        btn.addEventListener('click', () => restoreVersionEntry(v));
         li.appendChild(btn);
         els.versionsList.appendChild(li);
       });
+    }
+
+    // Vuelve a una versión guardada (HTML único: al editor; proyecto: reescribe archivos).
+    function restoreVersionEntry(v) {
+      if (!v) return;
+      if (v.files) { Promise.resolve(restoreProjectVersion(v)).then(scheduleBankVersionSync, () => {}); return; }
+      if (!state.editor) return;
+      state.editor.setValue(v.html);
+      if (state.execution) state.execution.html = v.html;
+      state.studioBaseline = v.html;
+      schedulePreviewUpdate();
+      scheduleBankVersionSync(); // la versión restaurada pasa a ser la actual también en el Banco
     }
 
     function addVersion(partial) {
@@ -10823,6 +10985,8 @@ if (typeof document !== 'undefined') {
       if (state.versions.length > 10) state.versions.length = 10; // tope: respeta cuota de localStorage al guardar en Banco
       if (typeof version.html === 'string') state.studioBaseline = version.html; // guardar versión = ya no está "sucio"
       renderVersions();
+      scheduleBankVersionSync();
+      return version;
     }
 
     function renderStudioDraftNotice(show) {
@@ -10983,7 +11147,7 @@ if (typeof document !== 'undefined') {
           exec.editorInited = true;
           const versions = state.pendingVersions;
           state.pendingVersions = null;
-          if (pj) initEditorForProject(exec);
+          if (pj) initEditorForProject(exec, { versions });
           else initEditorForExecution(exec.html, { versions, initialSource: 'generado' });
         }
       } else {
@@ -11312,10 +11476,11 @@ if (typeof document !== 'undefined') {
         });
       } finally { stop(); }
       if (!alive()) return;
-      if (!res.ok) { pe.cro = { status: 'error', round, error: res.error, items: [], creator: 'idle' }; return; }
+      if (!res.ok) { pe.cro = { status: 'error', round, error: res.error, items: [], creator: 'idle' }; aiHistAdd({ role: 'system', status: 'error', text: `Crítico (vuelta ${round}): no pudo responder. ${res.error || ''}`.trim() }); return; }
       const items = parseCriticItems(res.text).map((it) => Object.assign({ selected: it.prioridad !== 'baja' }, it));
       const looksEmpty = /^\s*(```[a-z]*\s*)?\[\s*\]/i.test(res.text) || /VEREDICTO\s*:\s*\**\s*OK/i.test(res.text);
       pe.cro = { status: 'done', round, items, ok: !items.length && looksEmpty, empty: !items.length && !looksEmpty, creator: 'idle', model: res.model, elapsedMs: Date.now() - startedAt };
+      aiHistAdd({ role: 'system', text: items.length ? `Crítico (vuelta ${round}): ${items.length} hallazgo${items.length === 1 ? '' : 's'}.` : `Crítico (vuelta ${round}): sin hallazgos${looksEmpty ? ' (OK)' : ''}.` });
       if (items.some((it) => it.selected)) await runCreatorPass(exec, alive);
     }
 
@@ -11347,6 +11512,19 @@ if (typeof document !== 'undefined') {
     }
 
     async function runHumanRewrite(exec, techniques, alive) {
+      await runHumanRewriteCore(exec, techniques, alive);
+      if (!alive()) return;
+      const rw = state.postExec && state.postExec.rewrite;
+      if (!rw) return;
+      const counts = (rw.added != null) ? ` +${rw.added} −${rw.removed}` : '';
+      if (rw.status === 'done') {
+        aiHistAdd({ role: 'system', status: rw.project ? 'pendiente' : 'aplicado', text: rw.project ? `Reescritura humana lista${counts}: falta aplicarla desde el panel.` : `Reescritura humana${counts} guardada como versión.`, versionId: rw.project ? undefined : (state.versions[0] && state.versions[0].id) });
+      } else if (rw.status === 'unchanged') aiHistAdd({ role: 'system', text: 'Reescritura humana: sin cambios.' });
+      else if (rw.status === 'rejected') aiHistAdd({ role: 'system', status: 'descartado', text: 'Reescritura humana descartada: alteraba la estructura.' });
+      else if (rw.status === 'error') aiHistAdd({ role: 'system', status: 'error', text: `Reescritura humana: ${rw.error || 'error'}` });
+    }
+
+    async function runHumanRewriteCore(exec, techniques, alive) {
       const pe = state.postExec;
       const startedAt = Date.now();
       pe.rewrite = { status: 'loading' };
@@ -11436,6 +11614,7 @@ if (typeof document !== 'undefined') {
       const token = ++postExecSeq;
       const alive = () => token === postExecSeq && state.execution === exec;
       resolveAiEditDecision('superseded');
+      supersedeAiCandidate();
       state.aiEditCandidate = null;
       if (els.aiEditDiff) els.aiEditDiff.hidden = true;
       await runCreatorPass(exec, alive);
@@ -11472,7 +11651,11 @@ if (typeof document !== 'undefined') {
         els.btnRewriteUse.disabled = true;
         let res;
         try { res = await applyProjectChanges(state.execution, rw.changes); } finally { els.btnRewriteUse.disabled = false; }
-        if (res.applied.length) { rw.used = true; addProjectVersion({ source: 'humana', instruction: 'Reescritura humana' }); }
+        if (res.applied.length) {
+          rw.used = true;
+          const hv = addProjectVersion({ source: 'humana', instruction: 'Reescritura humana' });
+          aiHistAdd({ role: 'system', status: 'aplicado', text: `Reescritura humana aplicada en ${res.applied.length} archivo${res.applied.length === 1 ? '' : 's'}.`, versionId: hv ? hv.id : undefined });
+        }
         els.postExecStatus.textContent = describeProjectApply(res) + (res.applied.length ? ' Guardada como versión "Reescritura humana".' : '');
         els.postExecStatus.classList.toggle('status--error', !res.applied.length || res.failed.length > 0);
         renderPostExecPanel();
@@ -11607,6 +11790,41 @@ if (typeof document !== 'undefined') {
       }
     }
 
+    // Si la landing YA está en el Banco (openedFromBank), cada versión nueva
+    // (manual, IA aceptada, reescritura, restaurar) se guarda sola en esa
+    // entrada. Antes sólo vivía en memoria hasta "Guardar en Banco" y, al
+    // reabrir desde el Banco, las versiones nuevas no estaban.
+    let bankSyncTimer = null;
+    let bankSyncChain = Promise.resolve();
+    function scheduleBankVersionSync() {
+      if (!state.openedFromBank || !state.execution || !isServerAvailable()) return;
+      if (bankSyncTimer) clearTimeout(bankSyncTimer);
+      bankSyncTimer = setTimeout(() => {
+        bankSyncTimer = null;
+        bankSyncChain = bankSyncChain.then(syncBankVersionsNow).catch(() => {});
+      }, 600);
+    }
+    async function syncBankVersionsNow() {
+      const id = state.openedFromBank;
+      const exec = state.execution;
+      if (!id || !exec) return;
+      const pj = exec.project;
+      const html = pj ? '' : (state.editor ? state.editor.getValue() : exec.html);
+      const payload = Object.assign(pj ? { files: pj.files, versions: state.versions } : { html, versions: state.versions },
+        { aiHistory: getAiHistoryForSave() }, exec.ssotSeed ? { ssotSeed: exec.ssotSeed } : {});
+      const r = await updateBankEntry(id, payload);
+      if (state.openedFromBank !== id) return; // se abrió otra landing mientras tanto
+      if (r && r.ok) {
+        if (pj) pj.dirty = false;
+        if (els.ejecutorStatus && /Versión/.test(els.ejecutorStatus.textContent || '')) {
+          els.ejecutorStatus.textContent = `${els.ejecutorStatus.textContent.replace(/\s*\(.*Banco.*\)\.?$/, '')} (sincronizada con el Banco).`;
+        }
+      } else if (els.ejecutorStatus) {
+        els.ejecutorStatus.textContent = `La versión se guardó en pantalla, pero no se pudo sincronizar con el Banco: ${(r && r.message) || 'error desconocido'}. Usá "Guardar en Banco".`;
+        els.ejecutorStatus.classList.add('status--error');
+      }
+    }
+
     async function onSaveBankClick() {
       if (!state.execution || state.execution.status !== 'done') return;
       if (!isServerAvailable()) {
@@ -11623,7 +11841,7 @@ if (typeof document !== 'undefined') {
       // (POST). "Ejecutar nuevamente" resetea openedFromBank a null porque
       // es contenido nuevo generado por IA.
       const result = state.openedFromBank
-        ? await updateBankEntry(state.openedFromBank, Object.assign(pjSave ? { files: pjSave.files } : { html, versions: state.versions }, state.execution.ssotSeed ? { ssotSeed: state.execution.ssotSeed } : {}))
+        ? await updateBankEntry(state.openedFromBank, Object.assign(pjSave ? { files: pjSave.files, versions: state.versions } : { html, versions: state.versions }, { aiHistory: getAiHistoryForSave() }, state.execution.ssotSeed ? { ssotSeed: state.execution.ssotSeed } : {}))
         : await createBankEntry(pjSave ? {
           project: state.project,
           verticals: state.verticals.slice(),
@@ -11634,6 +11852,8 @@ if (typeof document !== 'undefined') {
           concept: state.execution.concept || undefined,
           prompt: state.execution.promptUsed,
           files: pjSave.files,
+          versions: state.versions,
+          aiHistory: getAiHistoryForSave(),
           technology: pjSave.technology,
           model: state.provider.model || '',
           provider: state.provider.type || '',
@@ -11650,6 +11870,7 @@ if (typeof document !== 'undefined') {
           model: state.provider.model || '',
           provider: state.provider.type || '',
           versions: state.versions,
+          aiHistory: getAiHistoryForSave(),
         });
       els.btnSaveBank.disabled = false;
       if (!result.ok) {
@@ -12150,6 +12371,7 @@ if (typeof document !== 'undefined') {
       if (!pj && m.view === 'server') m.view = 'browser';
       if (els.previewServerStopped) els.previewServerStopped.hidden = !(pj && pj.previewStatus === 'stopped');
       if (m.open) applyConsoleView();
+      syncAiChatChrome();
     }
 
     function setConsoleView(view) {
@@ -12536,6 +12758,401 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Estudio: edición asistida por IA ---------- */
 
+    /* ---------- Diff unificado ("Ver cambios") ---------- */
+
+    const UDIFF_MAX_ROWS = 400; // filas de diff visibles antes de "Mostrar todo"
+
+    function udEl(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    }
+
+    // Pinta los diffs por archivo (salida de buildFilesUnifiedDiff) dentro de `container`.
+    function renderUnifiedDiff(container, files, showAll) {
+      container.textContent = '';
+      if (!files || !files.length) { container.appendChild(udEl('p', 'udiff__note', 'Sin diferencias para mostrar.')); return; }
+      const root = udEl('div', 'udiff');
+      root.setAttribute('role', 'region');
+      root.setAttribute('aria-label', 'Cambios propuestos (diff unificado)');
+      root.tabIndex = 0;
+      let budget = showAll ? Infinity : UDIFF_MAX_ROWS;
+      let truncated = false;
+      files.forEach((f) => {
+        const sec = udEl('section', 'udiff__file');
+        const h = udEl('h4', 'udiff__fname', `${f.isNew ? 'nuevo · ' : ''}${f.path}`);
+        h.appendChild(udEl('span', 'udiff__fstat', `+${f.added} −${f.removed}${f.approximate ? ' (estimado)' : ''}`));
+        sec.appendChild(h);
+        if (f.approximate) sec.appendChild(udEl('p', 'udiff__note', 'Archivo demasiado grande: no se muestra el detalle línea a línea.'));
+        f.hunks.forEach((hk, hi) => {
+          if (budget <= 0) { truncated = true; return; }
+          if (hi > 0) sec.appendChild(udEl('div', 'udiff__gap', '…'));
+          sec.appendChild(udEl('div', 'udiff__hh', `@@ -${hk.oldStart},${hk.oldLines} +${hk.newStart},${hk.newLines} @@`));
+          hk.lines.forEach((l) => {
+            if (budget <= 0) { truncated = true; return; }
+            budget--;
+            const row = udEl('div', `udiff__row udiff__row--${l.type}`);
+            row.appendChild(udEl('span', 'udiff__no', l.oldNo == null ? '' : String(l.oldNo)));
+            row.appendChild(udEl('span', 'udiff__no', l.newNo == null ? '' : String(l.newNo)));
+            row.appendChild(udEl('span', 'udiff__sign', l.type === 'add' ? '+' : (l.type === 'remove' ? '−' : ' ')));
+            row.appendChild(udEl('span', 'udiff__code', l.text));
+            sec.appendChild(row);
+          });
+        });
+        root.appendChild(sec);
+      });
+      if (truncated) {
+        const more = udEl('button', 'udiff__more', 'Mostrar todo');
+        more.type = 'button';
+        more.addEventListener('click', () => renderUnifiedDiff(container, files, true));
+        root.appendChild(more);
+      }
+      container.appendChild(root);
+    }
+
+    // Prepara un <details class="udiff-details"> colapsado que calcula y pinta el diff recién al abrirse.
+    // getFiles: () => lista de {path, old, content, isNew} (o null si no hay datos).
+    function setupDiffDisclosure(details, getFiles, onToggle) {
+      if (!details) return;
+      const body = details.querySelector('.udiff-body');
+      details.open = false;
+      body.textContent = '';
+      details._udGet = getFiles;
+      details._udDone = false;
+      if (!details._udBound) {
+        details._udBound = true;
+        details.addEventListener('toggle', () => {
+          if (details._udOnToggle) details._udOnToggle(details.open);
+          if (!details.open || details._udDone) return;
+          details._udDone = true;
+          const files = details._udGet();
+          if (!files) body.appendChild(udEl('p', 'udiff__note', 'El detalle de este cambio ya no está disponible.'));
+          else renderUnifiedDiff(body, buildFilesUnifiedDiff(files));
+        });
+      }
+      details._udOnToggle = onToggle || null;
+    }
+
+    function showCandidateChanges(files) {
+      renderAiChat(); // el candidato (y su historyId) ya está asignado: muestra Aceptar/Descartar en la burbuja
+      if (!els.aiEditChanges) return;
+      setupDiffDisclosure(els.aiEditChanges, () => files);
+      els.aiEditChanges.hidden = false;
+    }
+
+    /* ---------- Chat "Cambios IA": historial por landing ---------- */
+
+    const aiDiffStore = new Map(); // id de entrada -> archivos {path, old, content, isNew} (sólo en memoria)
+    let aiHistSeq = 0;
+    const AI_SCOPE_LABELS = { document: 'Documento completo', selection: 'Selección', project: 'Proyecto' };
+    const AI_STATUS_LABELS = { aplicado: 'aplicado', descartado: 'descartado', pendiente: 'pendiente', error: 'error' };
+
+    function aiHistAdd(e) {
+      const entry = Object.assign({ id: `h${Date.now().toString(36)}${(aiHistSeq++).toString(36)}`, ts: Date.now() }, e);
+      Object.keys(entry).forEach((k) => { if (entry[k] === undefined) delete entry[k]; });
+      state.aiHistory.push(entry);
+      while (state.aiHistory.length > AI_HISTORY_MAX) aiDiffStore.delete(state.aiHistory.shift().id);
+      renderAiChat();
+      return entry;
+    }
+
+    function aiHistPatch(id, patch) {
+      const entry = state.aiHistory.find((e) => e.id === id);
+      if (!entry) return;
+      Object.keys(patch).forEach((k) => { if (patch[k] === undefined) delete entry[k]; else entry[k] = patch[k]; });
+      if (patch.status && patch.status !== 'pendiente') state.aiChat.openDiffs.delete(id);
+      renderAiChat();
+    }
+
+    function setAiHistory(list) {
+      state.aiHistory = Array.isArray(list) ? list : [];
+      aiDiffStore.clear();
+      state.aiChat.openDiffs.clear();
+      renderAiChat();
+    }
+
+    // Lo que viaja al Banco: sólo resúmenes (nada de diffs ni html) y sin "pendiente".
+    function getAiHistoryForSave() {
+      return normalizeAiHistory(state.aiHistory);
+    }
+
+    function logAiRequest(instruction, scope, tag) {
+      if (tag === 'critic') return aiHistAdd({ role: 'system', text: 'Creador: aplicando los arreglos elegidos del crítico.', scope });
+      if (tag === 'assets') return aiHistAdd({ role: 'system', text: 'Recursos: pidiendo a la IA que inserte los faltantes.', scope });
+      return aiHistAdd({ role: 'user', text: instruction, scope });
+    }
+
+    // Un candidato nuevo reemplaza al pendiente: el viejo queda "descartado" en el historial.
+    function supersedeAiCandidate() {
+      const c = state.aiEditCandidate;
+      if (c && c.historyId) aiHistPatch(c.historyId, { status: 'descartado' });
+    }
+
+    // Registra el resultado de la IA como burbuja "pendiente"; devuelve su id.
+    function logAiCandidate(files, scope, diff) {
+      const summary = summarizeAiDiff(files);
+      if (diff && summary.files.length === 1) { summary.added = diff.added; summary.removed = diff.removed; summary.files[0].added = diff.added; summary.files[0].removed = diff.removed; }
+      const entry = aiHistAdd({ role: 'assistant', status: 'pendiente', text: '', scope, diffSummary: summary });
+      aiDiffStore.set(entry.id, files.map((f) => ({ path: f.path, old: f.old || '', content: f.content, isNew: !!f.isNew })));
+      return entry.id;
+    }
+
+    // Diff de una burbuja: el guardado en memoria o, si se restauró del Banco, el recalculado
+    // entre la versión creada y la anterior.
+    function aiEntryDiffFiles(entry) {
+      const mem = aiDiffStore.get(entry.id);
+      if (mem) return mem;
+      if (!entry.versionId) return null;
+      const idx = state.versions.findIndex((v) => v.id === entry.versionId);
+      const v = state.versions[idx];
+      const prev = state.versions[idx + 1];
+      if (idx < 0 || !prev) return null;
+      if (v.files && prev.files) {
+        const paths = Array.from(new Set(Object.keys(prev.files).concat(Object.keys(v.files))));
+        const out = paths.filter((p) => prev.files[p] !== v.files[p]).map((p) => ({ path: p, old: prev.files[p] || '', content: v.files[p] == null ? '' : v.files[p], isNew: prev.files[p] == null }));
+        return out.length ? out : null;
+      }
+      if (typeof v.html === 'string' && typeof prev.html === 'string') return [{ path: 'index.html', old: prev.html, content: v.html }];
+      return null;
+    }
+
+    function setAiChatStatus(text, isError) {
+      if (!els.aichatStatus) return;
+      els.aichatStatus.textContent = text || '';
+      els.aichatStatus.classList.toggle('is-error', !!isError);
+    }
+
+    function syncAiChatBusy() {
+      const busy = !!state.aiEditRunId;
+      state.aiChat.busy = busy;
+      if (els.btnAiChatSend) els.btnAiChatSend.disabled = busy;
+    }
+
+    function renderAiChat() {
+      const n = state.aiHistory.filter((e) => e.role === 'assistant').length;
+      if (els.aichatCount) { els.aichatCount.textContent = String(n); els.aichatCount.hidden = n === 0; }
+      if (els.btnAiChatToggle) els.btnAiChatToggle.setAttribute('aria-label', n ? `Cambios IA (${n})` : 'Cambios IA');
+      const list = els.aichatList;
+      if (!list) return;
+      const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+      list.textContent = '';
+      if (!state.aiHistory.length) {
+        list.appendChild(udEl('li', 'aichat__empty', 'Todavía no pediste cambios a la IA en esta landing. Escribí abajo qué querés cambiar.'));
+        return;
+      }
+      const fmt = new Intl.DateTimeFormat('es', { timeStyle: 'short', dateStyle: 'short' });
+      const pending = state.aiEditCandidate;
+      state.aiHistory.forEach((e) => {
+        const li = udEl('li', `aichat__msg aichat__msg--${e.role}`);
+        const meta = udEl('div', 'aichat__meta');
+        meta.appendChild(udEl('span', '', e.role === 'user' ? 'Vos' : (e.role === 'assistant' ? 'IA' : 'Sistema')));
+        if (e.scope && AI_SCOPE_LABELS[e.scope]) meta.appendChild(udEl('span', '', AI_SCOPE_LABELS[e.scope]));
+        meta.appendChild(udEl('time', '', fmt.format(new Date(e.ts))));
+        if (e.status) meta.appendChild(udEl('span', `aichat__pill aichat__pill--${e.status}`, AI_STATUS_LABELS[e.status] || e.status));
+        li.appendChild(meta);
+        if (e.text) li.appendChild(udEl('div', 'aichat__text', e.text));
+        const ds = e.diffSummary;
+        if (ds) {
+          const nf = ds.files.length;
+          li.appendChild(udEl('div', 'aichat__text', `${nf} archivo${nf === 1 ? '' : 's'} · +${ds.added} −${ds.removed}${ds.approximate ? ' (estimado)' : ''}`));
+          if (nf > 1 || (nf === 1 && ds.files[0].path !== 'index.html')) {
+            const ul = udEl('ul', 'aichat__files');
+            ds.files.slice(0, 8).forEach((f) => ul.appendChild(udEl('li', '', `${f.isNew ? 'nuevo ' : ''}${f.path}: +${f.added} −${f.removed}`)));
+            li.appendChild(ul);
+          }
+          if (e.role === 'assistant' && (aiDiffStore.has(e.id) || e.versionId)) {
+            const det = document.createElement('details');
+            det.className = 'udiff-details';
+            det.appendChild(udEl('summary', '', 'Ver cambios'));
+            det.appendChild(udEl('div', 'udiff-body'));
+            setupDiffDisclosure(det, () => aiEntryDiffFiles(e), (open) => { if (open) state.aiChat.openDiffs.add(e.id); else state.aiChat.openDiffs.delete(e.id); });
+            li.appendChild(det);
+            if (state.aiChat.openDiffs.has(e.id)) { det.open = true; }
+          }
+        }
+        const actions = udEl('div', 'aichat__actions');
+        if (e.status === 'pendiente' && pending && pending.historyId === e.id) {
+          const ok = udEl('button', 'cmodal__btn cmodal__btn--accent', 'Aceptar');
+          ok.type = 'button';
+          ok.addEventListener('click', () => { if (pending.project) onProjectAiEditAccept(); else onAiEditAccept(); });
+          const no = udEl('button', 'cmodal__btn', 'Descartar');
+          no.type = 'button';
+          no.addEventListener('click', onAiEditDiscard);
+          actions.appendChild(ok); actions.appendChild(no);
+        }
+        if (e.versionId && state.versions.some((v) => v.id === e.versionId)) {
+          const rb = udEl('button', 'cmodal__btn', 'Restaurar esta versión');
+          rb.type = 'button';
+          rb.addEventListener('click', () => { restoreVersionEntry(state.versions.find((v) => v.id === e.versionId)); setAiChatStatus('Versión restaurada en el Estudio.', false); });
+          actions.appendChild(rb);
+        }
+        if (actions.childNodes.length) li.appendChild(actions);
+        list.appendChild(li);
+      });
+      if (nearBottom) list.scrollTop = list.scrollHeight;
+    }
+
+    async function onAiChatSubmit(ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (state.aiChat.busy || state.aiEditRunId) return;
+      const text = els.aichatInput.value.trim();
+      if (!text) { setAiChatStatus('Escribí qué cambio querés pedirle a la IA.', true); return; }
+      if (!consoleAvailable()) { setAiChatStatus('Primero generá o abrí una landing en el Estudio.', true); return; }
+      if (state.aiEditCandidate) { setAiChatStatus('Hay un cambio pendiente: aceptalo o descartalo antes de pedir otro.', true); return; }
+      els.aiInstruction.value = text;
+      els.aiScope.value = els.aichatScope.value;
+      setAiChatStatus('Aplicando el cambio con IA…', false);
+      const r = await runAiEdit('chat');
+      if (r && r.ok) {
+        els.aichatInput.value = '';
+        setAiChatStatus('Cambio listo: revisá "Ver cambios" y elegí Aceptar o Descartar.', false);
+      } else {
+        setAiChatStatus((r && r.error) || els.aiEditStatus.textContent || 'No se pudo aplicar el cambio.', true);
+      }
+    }
+
+    /* ---- modal flotante (mismo patrón que la Consola) ---- */
+
+    const AICHAT_KEY = 'lpa_aichat_modal_v1';
+    const AICHAT_MIN_W = 320;
+    const AICHAT_MIN_H = 260;
+
+    function clampAiChatRect(r) {
+      const vw = Math.max(window.innerWidth || 0, 320);
+      const vh = Math.max(window.innerHeight || 0, 240);
+      const w = Math.round(Math.min(Math.max(Number(r.w) || 0, AICHAT_MIN_W), vw));
+      const h = Math.round(Math.min(Math.max(Number(r.h) || 0, AICHAT_MIN_H), vh));
+      const x = Math.round(Math.min(Math.max(Number(r.x) || 0, 0), vw - w));
+      const y = Math.round(Math.min(Math.max(Number(r.y) || 0, 0), vh - h));
+      return { x, y, w, h };
+    }
+
+    function loadAiChatRect() {
+      const raw = safeGetItem(AICHAT_KEY);
+      if (raw) {
+        try {
+          const r = JSON.parse(raw);
+          if (r && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(r[k]))) return clampAiChatRect(r);
+        } catch (e) { /* valor por defecto */ }
+      }
+      const vw = Math.max(window.innerWidth || 0, 320);
+      const vh = Math.max(window.innerHeight || 0, 240);
+      const w = Math.min(440, vw - 32);
+      const h = Math.min(560, Math.round(vh * 0.72));
+      return clampAiChatRect({ x: vw - w - 16, y: Math.round((vh - h) / 2), w, h });
+    }
+
+    function applyAiChatRect() {
+      const el = els.aichatModal;
+      const m = state.aiChat;
+      if (!el) return;
+      if (consoleIsMobile()) { // hoja inferior a todo el ancho (CSS compartido con la Consola)
+        ['left', 'top', 'width', 'height'].forEach((k) => { el.style[k] = ''; });
+        el.classList.add('is-sheet');
+        return;
+      }
+      el.classList.remove('is-sheet');
+      if (!m.rect) m.rect = loadAiChatRect();
+      m.rect = clampAiChatRect(m.rect);
+      el.style.left = m.rect.x + 'px';
+      el.style.top = m.rect.y + 'px';
+      el.style.width = m.rect.w + 'px';
+      el.style.height = m.rect.h + 'px';
+    }
+
+    function saveAiChatRect() {
+      if (state.aiChat.rect) safeSetItem(AICHAT_KEY, JSON.stringify(state.aiChat.rect));
+    }
+
+    function openAiChat() {
+      const m = state.aiChat;
+      if (!els.aichatModal || !consoleAvailable()) return;
+      if (consoleIsMobile() && state.consoleModal.open) closeConsoleModal(false); // en móvil ambas son hoja inferior
+      m.open = true;
+      m.lastFocus = document.activeElement;
+      els.aichatModal.hidden = false;
+      if (els.btnAiChatToggle) els.btnAiChatToggle.setAttribute('aria-expanded', 'true');
+      applyAiChatRect();
+      renderAiChat();
+      if (els.aichatList) els.aichatList.scrollTop = els.aichatList.scrollHeight;
+      try { els.aichatInput.focus({ preventScroll: true }); } catch (e) { /* no-op */ }
+    }
+
+    function closeAiChat(restoreFocus) {
+      const m = state.aiChat;
+      if (!els.aichatModal) return;
+      m.open = false;
+      els.aichatModal.hidden = true;
+      if (els.btnAiChatToggle) els.btnAiChatToggle.setAttribute('aria-expanded', 'false');
+      if (restoreFocus !== false && els.btnAiChatToggle && !els.btnAiChatToggle.hidden) {
+        try { els.btnAiChatToggle.focus({ preventScroll: true }); } catch (e) { /* no-op */ }
+      }
+    }
+
+    function toggleAiChat() {
+      if (state.aiChat.open) closeAiChat(true); else openAiChat();
+    }
+
+    function syncAiChatChrome() {
+      const avail = consoleAvailable();
+      if (els.btnAiChatToggle) els.btnAiChatToggle.hidden = !avail;
+      if (!avail && state.aiChat.open) closeAiChat(false);
+      renderAiChat();
+    }
+
+    function startAiChatDrag(event, mode) {
+      const m = state.aiChat;
+      if (!els.aichatModal || consoleIsMobile() || (event.button != null && event.button > 0)) return;
+      if (mode === 'move' && event.target && event.target.closest && event.target.closest('button, input, a, select, textarea')) return;
+      event.preventDefault();
+      if (!m.rect) m.rect = loadAiChatRect();
+      const start = { px: event.clientX, py: event.clientY, r: Object.assign({}, m.rect) };
+      const handle = mode === 'move' ? els.aichatHeader : els.aichatResize;
+      try { if (handle.setPointerCapture && event.pointerId != null) handle.setPointerCapture(event.pointerId); } catch (e) { /* no-op */ }
+      const onMove = (ev) => {
+        const dx = ev.clientX - start.px;
+        const dy = ev.clientY - start.py;
+        m.rect = mode === 'move'
+          ? clampAiChatRect({ x: start.r.x + dx, y: start.r.y + dy, w: start.r.w, h: start.r.h })
+          : clampAiChatRect({ x: start.r.x, y: start.r.y, w: Math.min(start.r.w + dx, window.innerWidth - start.r.x), h: Math.min(start.r.h + dy, window.innerHeight - start.r.y) });
+        applyAiChatRect();
+      };
+      const onUp = () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onUp);
+        saveAiChatRect();
+      };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onUp);
+    }
+
+    function onAiChatResizeKeydown(event) {
+      const step = event.shiftKey ? 60 : 20;
+      const m = state.aiChat;
+      if (consoleIsMobile() || !m.rect) return;
+      const d = { ArrowRight: [step, 0], ArrowLeft: [-step, 0], ArrowDown: [0, step], ArrowUp: [0, -step] }[event.key];
+      if (!d) return;
+      event.preventDefault();
+      m.rect = clampAiChatRect({ x: m.rect.x, y: m.rect.y, w: m.rect.w + d[0], h: m.rect.h + d[1] });
+      applyAiChatRect();
+      saveAiChatRect();
+    }
+
+    function onAiChatKeydown(event) {
+      if (event.key === 'Escape' && state.aiChat.open) {
+        const t = event.target;
+        if (els.aichatModal.contains(t) || t === els.btnAiChatToggle) { event.preventDefault(); closeAiChat(true); }
+        return;
+      }
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && event.target === els.aichatInput) {
+        event.preventDefault();
+        onAiChatSubmit();
+      }
+    }
+
     function onAiEditClick() { return runAiEdit(); }
 
     // Devuelve { ok, error?, candidate? }; tag marca el origen del candidato ('critic', 'assets').
@@ -12569,9 +13186,11 @@ if (typeof document !== 'undefined') {
       state.aiEditRunId = runId;
       els.btnAiEdit.disabled = true;
       els.btnCancelAiEdit.hidden = false;
+      syncAiChatBusy();
       els.aiEditStatus.classList.remove('status--error');
       const startedAt = Date.now();
       els.aiEditStatus.textContent = 'Aplicando el cambio con IA… 0s';
+      logAiRequest(instruction, scope, tag);
       const timer = setInterval(() => {
         els.aiEditStatus.textContent = `Aplicando el cambio con IA… ${Math.round((Date.now() - startedAt) / 1000)}s`;
       }, 1000);
@@ -12582,16 +13201,22 @@ if (typeof document !== 'undefined') {
       els.btnCancelAiEdit.hidden = true;
       els.btnAiEdit.disabled = false;
       state.aiEditRunId = null;
+      syncAiChatBusy();
 
       if (!result.ok || !result.html) {
         els.aiEditStatus.textContent = result.error || 'La IA no devolvió un HTML válido.';
         els.aiEditStatus.classList.add('status--error');
+        aiHistAdd({ role: 'assistant', status: 'error', text: els.aiEditStatus.textContent, scope });
         return { ok: false, error: els.aiEditStatus.textContent };
       }
 
       const diff = diffLines(fullHtml, result.html);
       if (els.aiEditFiles) els.aiEditFiles.hidden = true;
+      supersedeAiCandidate();
       state.aiEditCandidate = { html: result.html, instruction, tag: tag || '' };
+      const diffFiles = [{ path: 'index.html', old: fullHtml, content: result.html }];
+      state.aiEditCandidate.historyId = logAiCandidate(diffFiles, scope, diff);
+      showCandidateChanges(diffFiles);
       const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
       els.aiEditStatus.textContent = `Cambio listo (modelo ${result.model}, ${elapsedS}s). Revisá el resumen y elegí Aceptar o Descartar.`;
       els.aiEditDiffSummary.textContent = diff.approximate
@@ -12608,10 +13233,11 @@ if (typeof document !== 'undefined') {
     function onAiEditAccept() {
       if (state.aiEditCandidate && state.aiEditCandidate.project) { onProjectAiEditAccept(); return; }
       if (!state.aiEditCandidate || !state.editor) return;
-      const { html, instruction, tag } = state.aiEditCandidate;
+      const { html, instruction, tag, historyId } = state.aiEditCandidate;
       state.editor.setValue(html);
       if (state.execution) state.execution.html = html;
-      addVersion({ source: 'ia', instruction, html });
+      const newVersion = addVersion({ source: 'ia', instruction, html });
+      if (historyId) aiHistPatch(historyId, { status: 'aplicado', versionId: newVersion.id });
       schedulePreviewUpdate();
       state.aiEditCandidate = null;
       els.aiEditDiff.hidden = true;
@@ -12623,6 +13249,7 @@ if (typeof document !== 'undefined') {
 
     function onAiEditDiscard() {
       const tag = state.aiEditCandidate && state.aiEditCandidate.tag;
+      if (state.aiEditCandidate && state.aiEditCandidate.historyId) aiHistPatch(state.aiEditCandidate.historyId, { status: 'descartado' });
       state.aiEditCandidate = null;
       els.aiEditDiff.hidden = true;
       if (els.aiEditFiles) els.aiEditFiles.hidden = true;
@@ -13014,6 +13641,7 @@ if (typeof document !== 'undefined') {
           state.execution = { label: full.meta.tema, promptUsed: full.prompt, status: 'done', html: full.html, editorInited: false, ssotSeed: full.meta.ssotSeed || null };
           state.openedFromBank = full.meta.id;
           state.pendingVersions = (full.versions && full.versions.length) ? full.versions : null;
+          setAiHistory(normalizeAiHistory(full.meta.aiHistory));
           goto('ejecutor');
           renderEjecutor();
         } catch (e) { alert(`No se pudo abrir la landing para editar: ${e.message}`); }
@@ -13026,6 +13654,7 @@ if (typeof document !== 'undefined') {
           state.execution = { label: full.meta.tema, promptUsed: full.prompt, status: 'idle', html: '', editorInited: false, ssotSeed: full.meta.ssotSeed || null };
           state.openedFromBank = null;
           state.pendingVersions = null;
+          setAiHistory([]);
           goto('ejecutor');
           renderEjecutor();
           executeCurrent();
@@ -13070,6 +13699,7 @@ if (typeof document !== 'undefined') {
         state.execution = { label: entry.proyecto, promptUsed: entry.prompt, status: 'done', html: entry.html, editorInited: false };
         state.openedFromBank = null; // sin id de servidor: "Guardar en Banco" crea una entrada nueva en disco cuando haya servidor
         state.pendingVersions = (entry.versions && entry.versions.length) ? entry.versions : null;
+        setAiHistory([]);
         goto('ejecutor');
         renderEjecutor();
       },
@@ -13521,6 +14151,7 @@ if (typeof document !== 'undefined') {
       state.openedFromBank = null;
       state.pendingVersions = null;
       state.versions = [];
+      setAiHistory([]);
       state.inspecting = false;
       state.inspectedElement = null;
       state.aiEditCandidate = null;
@@ -13743,6 +14374,17 @@ if (typeof document !== 'undefined') {
         els.consoleResize.addEventListener('keydown', onConsoleResizeKeydown);
       }
       if (els.consoleModal) els.consoleModal.addEventListener('keydown', onConsoleModalKeydown);
+      if (els.btnAiChatToggle) els.btnAiChatToggle.addEventListener('click', toggleAiChat);
+      if (els.btnAiChatClose) els.btnAiChatClose.addEventListener('click', () => closeAiChat(true));
+      if (els.aichatHeader) els.aichatHeader.addEventListener('pointerdown', (ev) => startAiChatDrag(ev, 'move'));
+      if (els.aichatResize) {
+        els.aichatResize.addEventListener('pointerdown', (ev) => startAiChatDrag(ev, 'resize'));
+        els.aichatResize.addEventListener('keydown', onAiChatResizeKeydown);
+      }
+      if (els.aichatModal) els.aichatModal.addEventListener('keydown', onAiChatKeydown);
+      if (els.btnAiChatToggle) els.btnAiChatToggle.addEventListener('keydown', onAiChatKeydown);
+      if (els.aichatForm) els.aichatForm.addEventListener('submit', onAiChatSubmit);
+      window.addEventListener('resize', () => { if (state.aiChat.open) applyAiChatRect(); });
       document.addEventListener('keydown', (ev) => { if (ev.target === els.btnConsoleToggle) onConsoleModalKeydown(ev); });
       window.addEventListener('resize', () => { if (state.consoleModal.open) applyConsoleRect(); });
       els.btnAiEdit.addEventListener('click', onAiEditClick);
@@ -13816,7 +14458,7 @@ if (typeof document !== 'undefined') {
       // jsdom), para no exponer el estado interno en el uso normal.
       const debugEnabled = (typeof location !== 'undefined' && /[?&]debug\b/.test(location.search || ''))
         || (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent || ''));
-      if (debugEnabled) window.__lpaDebug = { runLLM, state, testProviderConnection, mediaApi };
+      if (debugEnabled) window.__lpaDebug = { runLLM, state, testProviderConnection, mediaApi, openBankEdit: (id) => serverBankHandlers.onEdit({ id }), addVersionForTest: addVersion };
     }
 
     if (document.readyState === 'loading') {

@@ -2808,3 +2808,105 @@ body:has(#view-ejecutor:not([hidden])) .fab-clear { bottom: 5rem; }
 .prompt-editor > .status { margin: 0; padding: var(--sp-2) var(--sp-3); border-top: 2px solid var(--ink); background: var(--surface-2); }
 .prompt-editor > .status:empty,
 .prompt-editor > .status[hidden] { display: none; }
+
+/* ---------- Diff unificado ("Ver cambios") ---------- */
+.udiff-details, .udiff {
+  --ud-bg: var(--surface, #fff);
+  --ud-text: var(--ink, #1c1533);
+  --ud-dim: var(--ink-soft, #5c5480);
+  --ud-border: var(--border, rgba(28, 21, 51, 0.18));
+  --ud-head: #ece8f7;
+  --ud-hunk: #e8ecff;
+  --ud-add-bg: #dff5e5;
+  --ud-add-text: #0b3b1c;
+  --ud-del-bg: #fde3eb;
+  --ud-del-text: #6b0f2f;
+}
+@media (prefers-color-scheme: dark) {
+  .udiff-details, .udiff {
+    --ud-head: #2a2542;
+    --ud-hunk: #1f2547;
+    --ud-add-bg: #12361f;
+    --ud-add-text: #b7f0c6;
+    --ud-del-bg: #4a1830;
+    --ud-del-text: #ffd0dc;
+    --ud-dim: #b4bccb;
+  }
+}
+.cmodal .udiff-details, .cmodal .udiff {
+  --ud-bg: #0d1117;
+  --ud-text: #e6edf3;
+  --ud-dim: #b4bccb;
+  --ud-border: #30363d;
+  --ud-head: #21262d;
+  --ud-hunk: #1b2a44;
+  --ud-add-bg: #12361f;
+  --ud-add-text: #b7f0c6;
+  --ud-del-bg: #4a1830;
+  --ud-del-text: #ffd0dc;
+}
+.udiff-details { margin-top: var(--sp-2, 0.5rem); font-size: 0.8rem; }
+.udiff-details[hidden] { display: none; }
+.udiff-details > summary { cursor: pointer; font-weight: 700; padding: 2px 0; }
+.udiff-details > summary:focus-visible { outline: 2px solid var(--accent, #58a6ff); outline-offset: 2px; }
+.udiff {
+  margin-top: 6px;
+  max-height: 22rem;
+  overflow: auto;
+  border: 1px solid var(--ud-border);
+  border-radius: 6px;
+  background: var(--ud-bg);
+  color: var(--ud-text);
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.udiff__file + .udiff__file { border-top: 1px solid var(--ud-border); }
+.udiff__fname { margin: 0; padding: 4px 8px; background: var(--ud-head); color: var(--ud-text); font-size: 0.75rem; font-weight: 700; position: sticky; left: 0; overflow-wrap: anywhere; }
+.udiff__fstat { font-weight: 400; color: var(--ud-dim); margin-left: 8px; }
+.udiff__hh { padding: 1px 8px; background: var(--ud-hunk); color: var(--ud-dim); }
+.udiff__gap { padding: 0 8px; color: var(--ud-dim); text-align: center; letter-spacing: 0.2em; background: var(--ud-hunk); }
+.udiff__row { display: flex; min-width: max-content; }
+.udiff__no { flex: 0 0 3.2em; padding: 0 6px; text-align: right; color: var(--ud-dim); user-select: none; }
+.udiff__sign { flex: 0 0 1.4em; text-align: center; user-select: none; }
+.udiff__code { flex: 1 0 auto; white-space: pre; padding-right: 10px; }
+.udiff__row--add { background: var(--ud-add-bg); color: var(--ud-add-text); }
+.udiff__row--add .udiff__no { color: var(--ud-add-text); opacity: 0.85; }
+.udiff__row--remove { background: var(--ud-del-bg); color: var(--ud-del-text); }
+.udiff__row--remove .udiff__no { color: var(--ud-del-text); opacity: 0.85; }
+.udiff__note { margin: 0; padding: 6px 8px; color: var(--ud-dim); font-family: inherit; }
+.udiff__more { display: block; width: 100%; padding: 6px; border: 0; border-top: 1px solid var(--ud-border); background: var(--ud-head); color: var(--ud-text); font: inherit; font-weight: 700; cursor: pointer; }
+.udiff__more:focus-visible { outline: 2px solid var(--accent, #58a6ff); outline-offset: -2px; }
+
+/* ---------- Botones flotantes (Consola + Cambios IA) ---------- */
+.fab-row { position: absolute; right: 12px; bottom: 12px; z-index: 5; display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; max-width: calc(100% - 24px); }
+.fab-row .console-fab { position: static; }
+.ai-badge { background: #58a6ff; color: #0d1117; }
+@media (max-width: 640px) { .fab-row { right: 8px; bottom: 8px; } }
+
+/* ---------- Chat "Cambios IA" (modal flotante, reutiliza .cmodal) ---------- */
+.aichat__list { flex: 1 1 auto; min-height: 0; margin: 0; padding: 10px 12px; list-style: none; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background: var(--c-bg); }
+.aichat__list:focus-visible { outline: 2px solid var(--c-accent); outline-offset: -2px; }
+.aichat__empty { color: var(--c-dim); text-align: center; padding: 18px 8px; }
+.aichat__msg { max-width: 92%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--c-border); background: var(--c-surface); color: var(--c-text); overflow-wrap: anywhere; }
+.aichat__msg--user { align-self: flex-end; background: #1f3a5f; border-color: #2f5d94; color: #f0f6fc; }
+.aichat__msg--assistant { align-self: flex-start; }
+.aichat__msg--system { align-self: center; max-width: 100%; background: transparent; border-style: dashed; color: var(--c-dim); font-size: 0.75rem; }
+.aichat__meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 4px; font-size: 0.7rem; color: var(--c-dim); }
+.aichat__msg--user .aichat__meta { color: #c9d8ea; }
+.aichat__text { white-space: pre-wrap; }
+.aichat__pill { padding: 0 8px; border-radius: 999px; font-weight: 700; color: #0d1117; background: var(--c-dim); }
+.aichat__pill--aplicado { background: var(--c-ok); }
+.aichat__pill--descartado { background: #b1bac4; }
+.aichat__pill--pendiente { background: var(--c-warn); }
+.aichat__pill--error { background: #ff7b72; }
+.aichat__files { margin: 4px 0 0; padding-left: 16px; color: var(--c-dim); }
+.aichat__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.aichat__status { flex: 0 0 auto; margin: 0; padding: 2px 12px; min-height: 1.2em; color: var(--c-dim); font-size: 0.75rem; }
+.aichat__status.is-error { color: var(--c-error); }
+.aichat__composer { flex: 0 0 auto; padding: 8px 12px 14px; border-top: 1px solid var(--c-border); background: var(--c-surface); display: flex; flex-direction: column; gap: 6px; }
+.aichat__input { width: 100%; box-sizing: border-box; resize: vertical; min-height: 3.2em; max-height: 10em; padding: 6px 8px; border: 1px solid var(--c-border); border-radius: 6px; background: var(--c-bg); color: var(--c-text); font: inherit; }
+.aichat__input:focus-visible, .aichat__scope:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 1px; }
+.aichat__row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.aichat__scope { flex: 1 1 auto; min-width: 0; padding: 4px 6px; border: 1px solid var(--c-border); border-radius: 6px; background: var(--c-bg); color: var(--c-text); font: inherit; }
+.aichat__sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
